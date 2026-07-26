@@ -18,7 +18,8 @@ On AdGuard for Mac:
 
 1. Open any `pan.baidu.com` page.
 2. Click **⚙ Auto-save** in the lower-right corner.
-3. Enter an absolute folder path such as `/incoming/baidu`.
+3. Select **Change destination** in the queue panel.
+4. Enter an absolute folder path such as `/incoming/baidu`.
 
 On Tampermonkey or another manager that supports userscript menu commands, you can instead open its userscript menu and select **Set destination folder…**.
 
@@ -28,12 +29,16 @@ Nested folders are created automatically. The setting is stored by the userscrip
 
 Opening many share links no longer starts many transfers at once:
 
-- Tabs join one exclusive browser queue before checking or writing cloud folders.
+- Each Baidu write attempt joins one exclusive browser queue.
 - A persisted delay spaces out Baidu write requests.
 - Each job is checked again after it reaches the front of the queue, preventing duplicate work.
 - Network errors, HTTP throttling, malformed responses, and non-permanent Baidu API failures use bounded exponential backoff with jitter.
+- A failing job releases the write slot before backoff, allowing other tabs to continue.
+- Requests time out after 25 seconds instead of holding the queue indefinitely.
 - Transfers use `ondup=skip`, making a retry safe if Baidu completed a request but its response was lost.
 - Browsers without the Web Locks API use a renewable local-storage lease as a fallback.
+
+Click **⚙ Auto-save** to open the live queue panel. It shows active and recent jobs, elapsed time, current phase, retries, destination, and whether the shared write slot is busy. Completed and failed entries can be cleared from the panel.
 
 The lock is released automatically if a queued or active tab closes. Leave queued tabs open until their status changes to success or failure.
 

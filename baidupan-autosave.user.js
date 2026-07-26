@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Baidu Pan Auto-Save
 // @namespace    https://github.com/jitdor/userscript-baidupan-autosave
-// @version      1.0.2
+// @version      1.0.3
 // @description  Automatically queues and saves unlocked Baidu Pan shares to a configurable folder.
 // @author       jitdor
 // @homepageURL  https://github.com/jitdor/userscript-baidupan-autosave
@@ -28,6 +28,7 @@
     const TRANSFER_MAX_ATTEMPTS = 7;
     const RETRY_BASE_DELAY_MILLISECONDS = 1800;
     const RETRY_MAX_DELAY_MILLISECONDS = 30000;
+    const REQUEST_TIMEOUT_MILLISECONDS = 25000;
     const MINIMUM_WRITE_INTERVAL_MILLISECONDS = 2500;
     const GLOBAL_LOCK_NAME = "baidupan-autosave-transfer-v1";
     const FALLBACK_LOCK_KEY = "baidupan-autosave:transfer-lock-v1";
@@ -35,13 +36,55 @@
     const LAST_WRITE_KEY = "baidupan-autosave:last-write-v1";
     const COOLDOWN_UNTIL_KEY = "baidupan-autosave:cooldown-until-v1";
     const JOB_KEY_PREFIX = "baidupan-autosave:job-v3:";
+    const QUEUE_ENTRY_PREFIX = "baidupan-autosave:queue-entry-v1:";
+    const QUEUE_TERMINAL_RETENTION_MILLISECONDS = 120000;
+    const QUEUE_STALE_MILLISECONDS = 600000;
+    const QUEUE_PANEL_REFRESH_MILLISECONDS = 1000;
     const OWNER_ID =
         `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
     const pageWindow =
         typeof unsafeWindow !== "undefined" ? unsafeWindow : window;
+    const currentQueueEntryKey = `${QUEUE_ENTRY_PREFIX}${OWNER_ID}`;
+    let queuePanelRefreshTimer = null;
+    let queueListenersRegistered = false;
 
     const sleep = (milliseconds) =>
         new Promise((resolve) => setTimeout(resolve, milliseconds));
+
+    async function fetchWithTimeout(
+        resource,
+        options = {},
+        timeoutMilliseconds = REQUEST_TIMEOUT_MILLISECONDS,
+        responseHandler = (response) => response
+    ) {
+        const controller = new AbortController();
+        const timeout = setTimeout(
+            () => controller.abort(),
+            timeoutMilliseconds
+        );
+
+        try {
+            const response = await fetch(resource, {
+                ...options,
+                signal: controller.signal
+            });
+            return await responseHandler(response);
+        } catch (error) {
+            if (controller.signal.aborted) {
+                const timeoutError = new Error(
+                    `Baidu request timed out after ` +
+                    `${Math.ceil(timeoutMilliseconds / 1000)}s`
+                );
+                timeoutError.name = "TimeoutError";
+                timeoutError.transient = true;
+                throw timeoutError;
+            }
+
+            throw error;
+        } finally {
+            clearTimeout(timeout);
+        }
+    }
 
     function isPotentialSharePage() {
         const url = new URL(location.href);
@@ -146,6 +189,7 @@
             const nextPath = normalizeDestinationPath(enteredPath);
             await setSetting(DESTINATION_SETTING_KEY, nextPath);
             updateSettingsButtonTitle(nextPath);
+            void refreshQueuePanel();
             showStatus(
                 `Destination changed to ${nextPath}. It will apply to new jobs.`
             );
@@ -169,6 +213,7 @@
                     DEFAULT_DESTINATION_PATH
                 );
                 updateSettingsButtonTitle(DEFAULT_DESTINATION_PATH);
+                void refreshQueuePanel();
                 showStatus(
                     `Destination reset to ${DEFAULT_DESTINATION_PATH}.`
                 );
@@ -184,7 +229,7 @@
 
         button.title =
             `Current destination: ${destinationPath}\n` +
-            "Click to change the Baidu Pan auto-save destination.";
+            "Click to view the queue or change the destination.";
     }
 
     function ensureSettingsButton() {
@@ -219,7 +264,7 @@
         button.addEventListener("click", (event) => {
             event.preventDefault();
             event.stopPropagation();
-            void configureDestinationPath();
+            toggleQueuePanel();
         });
 
         const parent = document.documentElement || document.body;
@@ -231,19 +276,319 @@
     }
 
     function mountSettingsButton() {
-        if (window.top !== window.self) return false;
+        if (pageWindow.top !== pageWindow.self) return false;
 
         if (document.body) {
             ensureSettingsButton();
+            registerQueueListeners();
+            void refreshQueuePanel();
             return true;
         }
 
         document.addEventListener(
             "DOMContentLoaded",
-            ensureSettingsButton,
+            () => {
+                ensureSettingsButton();
+                registerQueueListeners();
+                void refreshQueuePanel();
+            },
             {once: true}
         );
         return true;
+    }
+
+    function registerQueueListeners() {
+        if (queueListenersRegistered) return;
+        queueListenersRegistered = true;
+
+        window.addEventListener("storage", (event) => {
+            if (
+                event.key &&
+                (
+                    event.key.startsWith(QUEUE_ENTRY_PREFIX) ||
+                    event.key === LAST_WRITE_KEY ||
+                    event.key === COOLDOWN_UNTIL_KEY
+                )
+            ) {
+                void refreshQueuePanel();
+            }
+        });
+    }
+
+    function createPanelAction(label, handler) {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = label;
+        Object.assign(button.style, {
+            padding: "6px 9px",
+            border: "1px solid rgba(255,255,255,.24)",
+            borderRadius: "6px",
+            color: "#fff",
+            background: "#374151",
+            font: "600 11px/1.3 sans-serif",
+            cursor: "pointer"
+        });
+        button.addEventListener("click", handler);
+        return button;
+    }
+
+    function ensureQueuePanel() {
+        let panel = document.querySelector("#baidupan-autosave-queue-panel");
+        if (panel) return panel;
+
+        panel = document.createElement("section");
+        panel.id = "baidupan-autosave-queue-panel";
+        panel.setAttribute("aria-label", "Baidu Pan auto-save queue");
+        Object.assign(panel.style, {
+            display: "none",
+            position: "fixed",
+            right: "18px",
+            bottom: "64px",
+            zIndex: "2147483647",
+            width: "min(420px, calc(100vw - 36px))",
+            maxHeight: "min(520px, calc(100vh - 100px))",
+            overflow: "auto",
+            boxSizing: "border-box",
+            padding: "14px",
+            border: "1px solid rgba(255,255,255,.18)",
+            borderRadius: "10px",
+            color: "#f9fafb",
+            background: "#111827",
+            boxShadow: "0 8px 30px rgba(0,0,0,.38)",
+            font: "12px/1.45 sans-serif"
+        });
+
+        const header = document.createElement("div");
+        Object.assign(header.style, {
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: "12px",
+            marginBottom: "10px"
+        });
+
+        const heading = document.createElement("strong");
+        heading.textContent = "Baidu Pan Auto-Save Queue";
+        heading.style.fontSize = "14px";
+        header.appendChild(heading);
+        header.appendChild(
+            createPanelAction("Close", () => setQueuePanelVisible(false))
+        );
+        panel.appendChild(header);
+
+        const destinationRow = document.createElement("div");
+        destinationRow.style.marginBottom = "9px";
+        const destinationLabel = document.createElement("span");
+        destinationLabel.textContent = "Destination: ";
+        const destinationValue = document.createElement("code");
+        destinationValue.id = "baidupan-autosave-queue-destination";
+        destinationRow.append(destinationLabel, destinationValue);
+        panel.appendChild(destinationRow);
+
+        const actions = document.createElement("div");
+        Object.assign(actions.style, {
+            display: "flex",
+            flexWrap: "wrap",
+            gap: "6px",
+            marginBottom: "10px"
+        });
+        actions.append(
+            createPanelAction(
+                "Change destination",
+                () => void configureDestinationPath()
+            ),
+            createPanelAction("Refresh", () => void refreshQueuePanel()),
+            createPanelAction("Clear finished", clearFinishedQueueEntries)
+        );
+        panel.appendChild(actions);
+
+        const summary = document.createElement("div");
+        summary.id = "baidupan-autosave-queue-summary";
+        Object.assign(summary.style, {
+            marginBottom: "8px",
+            color: "#cbd5e1"
+        });
+        panel.appendChild(summary);
+
+        const list = document.createElement("div");
+        list.id = "baidupan-autosave-queue-list";
+        panel.appendChild(list);
+
+        const note = document.createElement("div");
+        note.textContent =
+            "Failed jobs release the write slot while backing off, so other " +
+            "tabs can continue.";
+        Object.assign(note.style, {
+            marginTop: "10px",
+            color: "#94a3b8",
+            fontSize: "11px"
+        });
+        panel.appendChild(note);
+
+        const parent = document.body || document.documentElement;
+        if (!parent) return null;
+
+        parent.appendChild(panel);
+        return panel;
+    }
+
+    function setQueuePanelVisible(visible) {
+        const panel = ensureQueuePanel();
+        if (!panel) return;
+
+        panel.style.display = visible ? "block" : "none";
+        if (queuePanelRefreshTimer) {
+            clearInterval(queuePanelRefreshTimer);
+            queuePanelRefreshTimer = null;
+        }
+
+        if (visible) {
+            void refreshQueuePanel();
+            queuePanelRefreshTimer = setInterval(
+                () => void refreshQueuePanel(),
+                QUEUE_PANEL_REFRESH_MILLISECONDS
+            );
+        }
+    }
+
+    function toggleQueuePanel() {
+        const panel = ensureQueuePanel();
+        if (!panel) return;
+
+        setQueuePanelVisible(panel.style.display === "none");
+    }
+
+    function clearFinishedQueueEntries() {
+        for (const entry of listQueueEntries()) {
+            if (isTerminalQueueState(entry.state)) {
+                removeStorageValue(`${QUEUE_ENTRY_PREFIX}${entry.id}`);
+            }
+        }
+        void refreshQueuePanel();
+    }
+
+    function clearElement(element) {
+        while (element && element.firstChild) {
+            element.removeChild(element.firstChild);
+        }
+    }
+
+    function renderQueueEntries(list, entries, now) {
+        clearElement(list);
+
+        if (!entries.length) {
+            const empty = document.createElement("div");
+            empty.textContent = "No recent save jobs.";
+            empty.style.color = "#94a3b8";
+            list.appendChild(empty);
+            return;
+        }
+
+        entries.slice(0, 25).forEach((entry, index) => {
+            const row = document.createElement("div");
+            Object.assign(row.style, {
+                padding: "8px 0",
+                borderTop:
+                    index === 0
+                        ? "1px solid rgba(255,255,255,.12)"
+                        : "1px solid rgba(255,255,255,.08)"
+            });
+
+            const title = document.createElement("div");
+            const elapsed = formatElapsed(
+                now - Number(entry.enqueuedAt || now)
+            );
+            title.textContent =
+                `#${index + 1} ${(entry.state || "queued").toUpperCase()} ` +
+                `• ${elapsed} • ${entry.itemCount || "?"} item(s)`;
+            Object.assign(title.style, {
+                fontWeight: "700",
+                color:
+                    entry.state === "failed"
+                        ? "#fca5a5"
+                        : entry.state === "done"
+                            ? "#86efac"
+                            : entry.state === "retrying"
+                                ? "#fcd34d"
+                                : "#f9fafb"
+            });
+            row.appendChild(title);
+
+            const detail = document.createElement("div");
+            detail.textContent =
+                `${entry.detail || "Waiting"} → ` +
+                `${entry.destinationPath || "destination pending"}`;
+            Object.assign(detail.style, {
+                marginTop: "2px",
+                color: "#cbd5e1",
+                overflowWrap: "anywhere"
+            });
+            row.appendChild(detail);
+            list.appendChild(row);
+        });
+    }
+
+    function updateQueueButtonBadge(entries) {
+        const button = document.querySelector(
+            "#baidupan-autosave-settings"
+        );
+        if (!button) return;
+
+        const activeCount = entries.filter(
+            (entry) => !isTerminalQueueState(entry.state)
+        ).length;
+        button.textContent =
+            activeCount > 0
+                ? `⚙ Auto-save (${activeCount})`
+                : "⚙ Auto-save";
+    }
+
+    async function refreshQueuePanel() {
+        const entries = listQueueEntries();
+        updateQueueButtonBadge(entries);
+
+        const panel = document.querySelector(
+            "#baidupan-autosave-queue-panel"
+        );
+        if (!panel || panel.style.display === "none") return;
+
+        const destination = await getDestinationPath();
+        const destinationElement = document.querySelector(
+            "#baidupan-autosave-queue-destination"
+        );
+        if (destinationElement) destinationElement.textContent = destination;
+
+        let heldWrites = 0;
+        let pendingWrites = 0;
+        try {
+            if (navigator.locks && typeof navigator.locks.query === "function") {
+                const lockState = await navigator.locks.query();
+                heldWrites = lockState.held.filter(
+                    (lock) => lock.name === GLOBAL_LOCK_NAME
+                ).length;
+                pendingWrites = lockState.pending.filter(
+                    (lock) => lock.name === GLOBAL_LOCK_NAME
+                ).length;
+            }
+        } catch (_) {
+            // The queue entries remain useful if lock inspection is blocked.
+        }
+
+        const summary = document.querySelector(
+            "#baidupan-autosave-queue-summary"
+        );
+        if (summary) {
+            const activeCount = entries.filter(
+                (entry) => !isTerminalQueueState(entry.state)
+            ).length;
+            summary.textContent =
+                `${activeCount} active • write slot ` +
+                `${heldWrites ? "busy" : "idle"} • ` +
+                `${pendingWrites} waiting for the slot`;
+        }
+
+        const list = document.querySelector("#baidupan-autosave-queue-list");
+        if (list) renderQueueEntries(list, entries, Date.now());
     }
 
     function readLocalValue(locals, key) {
@@ -389,15 +734,20 @@
     }
 
     async function getShareContextFromHtml() {
-        const response = await fetch(getSharePageUrl(), {
-            credentials: "include",
-            cache: "no-store"
-        });
+        return fetchWithTimeout(
+            getSharePageUrl(),
+            {
+                credentials: "include",
+                cache: "no-store"
+            },
+            REQUEST_TIMEOUT_MILLISECONDS,
+            async (response) => {
+                if (!response.ok) return null;
 
-        if (!response.ok) return null;
-
-        const html = await response.text();
-        return buildShareContext(extractLocalsData(html));
+                const html = await response.text();
+                return buildShareContext(extractLocalsData(html));
+            }
+        );
     }
 
     async function waitForShareContext(timeoutMilliseconds = 90000) {
@@ -439,46 +789,52 @@
     }
 
     async function baiduRequest(path, options = {}) {
-        let response;
-
         try {
-            response = await fetch(path, {
-                credentials: "include",
-                headers: {
-                    "X-Requested-With": "XMLHttpRequest",
-                    ...(options.body
-                        ? {
-                            "Content-Type":
-                                "application/x-www-form-urlencoded; charset=UTF-8"
-                        }
-                        : {})
+            return await fetchWithTimeout(
+                path,
+                {
+                    credentials: "include",
+                    headers: {
+                        "X-Requested-With": "XMLHttpRequest",
+                        ...(options.body
+                            ? {
+                                "Content-Type":
+                                    "application/x-www-form-urlencoded; charset=UTF-8"
+                            }
+                            : {})
+                    },
+                    ...options
                 },
-                ...options
-            });
-        } catch (error) {
-            error.transient = true;
-            throw error;
-        }
+                REQUEST_TIMEOUT_MILLISECONDS,
+                async (response) => {
+                    if (!response.ok) {
+                        const error = new Error(
+                            `Baidu request failed: HTTP ${response.status}`
+                        );
+                        error.httpStatus = response.status;
+                        error.retryAfterMilliseconds =
+                            parseRetryAfter(response);
+                        error.transient =
+                            response.status === 408 ||
+                            response.status === 409 ||
+                            response.status === 425 ||
+                            response.status === 429 ||
+                            response.status >= 500;
+                        throw error;
+                    }
 
-        if (!response.ok) {
-            const error = new Error(
-                `Baidu request failed: HTTP ${response.status}`
+                    try {
+                        return await response.json();
+                    } catch (error) {
+                        error.transient = true;
+                        throw error;
+                    }
+                }
             );
-            error.httpStatus = response.status;
-            error.retryAfterMilliseconds = parseRetryAfter(response);
-            error.transient =
-                response.status === 408 ||
-                response.status === 409 ||
-                response.status === 425 ||
-                response.status === 429 ||
-                response.status >= 500;
-            throw error;
-        }
-
-        try {
-            return await response.json();
         } catch (error) {
-            error.transient = true;
+            if (typeof error.transient !== "boolean") {
+                error.transient = true;
+            }
             throw error;
         }
     }
@@ -564,11 +920,34 @@
         }
     }
 
+    async function performGlobalWrite(label, operation) {
+        updateQueueEntry({
+            state: "queued",
+            detail: `Waiting for write slot: ${label}`
+        });
+
+        return withGlobalTransferLock(async () => {
+            updateQueueEntry({
+                state: "working",
+                detail: label
+            });
+            await waitForSharedWriteSlot();
+            return operation();
+        });
+    }
+
     async function runWithRetry(label, operation, maximumAttempts) {
         let lastError;
 
         for (let attempt = 0; attempt < maximumAttempts; attempt += 1) {
             try {
+                updateQueueEntry({
+                    state: "working",
+                    detail:
+                        `${label} (${attempt + 1}/${maximumAttempts})`,
+                    attempt: attempt + 1,
+                    maximumAttempts
+                });
                 return await operation(attempt);
             } catch (error) {
                 lastError = error;
@@ -581,8 +960,22 @@
                 }
 
                 const delay = getRetryDelayMilliseconds(error, attempt);
-                extendSharedCooldown(delay);
+                if (
+                    error.retryAfterMilliseconds > 0 ||
+                    error.httpStatus === 429
+                ) {
+                    extendSharedCooldown(delay);
+                }
                 const seconds = Math.ceil(delay / 1000);
+                updateQueueEntry({
+                    state: "retrying",
+                    detail:
+                        `${label} failed; retrying in ${seconds}s`,
+                    attempt: attempt + 1,
+                    maximumAttempts,
+                    retryAt: Date.now() + delay,
+                    lastError: String(error.message || error)
+                });
                 showStatus(
                     `${label} failed; retrying in ${seconds}s ` +
                     `(${attempt + 2}/${maximumAttempts})…`,
@@ -659,13 +1052,15 @@
             block_list: "[]"
         });
 
-        await waitForSharedWriteSlot();
-        return baiduRequest(
-            `/api/create?${createQuery.toString()}`,
-            {
-                method: "POST",
-                body: createBody
-            }
+        return performGlobalWrite(
+            `Creating ${path}`,
+            () => baiduRequest(
+                `/api/create?${createQuery.toString()}`,
+                {
+                    method: "POST",
+                    body: createBody
+                }
+            )
         );
     }
 
@@ -737,13 +1132,15 @@
             path: destinationPath
         });
 
-        await waitForSharedWriteSlot();
-        const result = await baiduRequest(
-            `/share/transfer?${query.toString()}`,
-            {
-                method: "POST",
-                body
-            }
+        const result = await performGlobalWrite(
+            `Saving ${fsids.length} item(s)`,
+            () => baiduRequest(
+                `/share/transfer?${query.toString()}`,
+                {
+                    method: "POST",
+                    body
+                }
+            )
         );
 
         if (result.errno !== 0) {
@@ -791,17 +1188,95 @@
         }
     }
 
-    async function withFallbackLeaseLock(task) {
+    function isTerminalQueueState(state) {
+        return state === "done" || state === "failed";
+    }
+
+    function updateQueueEntry(patch) {
+        const current = readJsonStorage(currentQueueEntryKey) || {
+            id: OWNER_ID,
+            enqueuedAt: Date.now()
+        };
+        const next = {
+            ...current,
+            ...patch,
+            updatedAt: Date.now()
+        };
+
+        writeStorageValue(currentQueueEntryKey, JSON.stringify(next));
+        void refreshQueuePanel();
+        return next;
+    }
+
+    function removeCurrentQueueEntry() {
+        removeStorageValue(currentQueueEntryKey);
+        void refreshQueuePanel();
+    }
+
+    function listQueueEntries(now = Date.now()) {
+        const entries = [];
+
+        try {
+            for (let index = localStorage.length - 1; index >= 0; index -= 1) {
+                const key = localStorage.key(index);
+                if (!key || !key.startsWith(QUEUE_ENTRY_PREFIX)) continue;
+
+                const entry = readJsonStorage(key);
+                if (!entry) {
+                    removeStorageValue(key);
+                    continue;
+                }
+
+                const age = now - Number(entry.updatedAt || entry.enqueuedAt);
+                const retention = isTerminalQueueState(entry.state)
+                    ? QUEUE_TERMINAL_RETENTION_MILLISECONDS
+                    : QUEUE_STALE_MILLISECONDS;
+
+                if (age > retention) {
+                    removeStorageValue(key);
+                    continue;
+                }
+
+                entries.push(entry);
+            }
+        } catch (_) {
+            return [];
+        }
+
+        return entries.sort(
+            (left, right) =>
+                Number(left.enqueuedAt || 0) -
+                Number(right.enqueuedAt || 0)
+        );
+    }
+
+    function formatElapsed(milliseconds) {
+        const seconds = Math.max(0, Math.floor(milliseconds / 1000));
+        if (seconds < 60) return `${seconds}s`;
+
+        const minutes = Math.floor(seconds / 60);
+        const remainingSeconds = seconds % 60;
+        if (minutes < 60) return `${minutes}m ${remainingSeconds}s`;
+
+        const hours = Math.floor(minutes / 60);
+        return `${hours}h ${minutes % 60}m`;
+    }
+
+    async function withFallbackLeaseLock(
+        lockKey,
+        task,
+        waitingMessage
+    ) {
         const lockToken = `${OWNER_ID}-${Math.random().toString(36).slice(2)}`;
         let lastQueueNotice = 0;
 
         while (true) {
             const now = Date.now();
-            const existingLock = readJsonStorage(FALLBACK_LOCK_KEY);
+            const existingLock = readJsonStorage(lockKey);
 
             if (!existingLock || existingLock.expiresAt <= now) {
                 writeStorageValue(
-                    FALLBACK_LOCK_KEY,
+                    lockKey,
                     JSON.stringify({
                         token: lockToken,
                         expiresAt:
@@ -810,17 +1285,17 @@
                 );
 
                 await sleep(80 + Math.floor(Math.random() * 120));
-                const confirmedLock = readJsonStorage(FALLBACK_LOCK_KEY);
+                const confirmedLock = readJsonStorage(lockKey);
 
                 if (confirmedLock && confirmedLock.token === lockToken) {
                     const heartbeat = setInterval(() => {
-                        const currentLock = readJsonStorage(FALLBACK_LOCK_KEY);
+                        const currentLock = readJsonStorage(lockKey);
                         if (!currentLock || currentLock.token !== lockToken) {
                             return;
                         }
 
                         writeStorageValue(
-                            FALLBACK_LOCK_KEY,
+                            lockKey,
                             JSON.stringify({
                                 token: lockToken,
                                 expiresAt:
@@ -834,18 +1309,20 @@
                         return await task();
                     } finally {
                         clearInterval(heartbeat);
-                        const currentLock = readJsonStorage(FALLBACK_LOCK_KEY);
+                        const currentLock = readJsonStorage(lockKey);
                         if (currentLock && currentLock.token === lockToken) {
-                            removeStorageValue(FALLBACK_LOCK_KEY);
+                            removeStorageValue(lockKey);
                         }
                     }
                 }
             }
 
             if (now - lastQueueNotice > 10000) {
-                showStatus(
-                    "Queued behind another Baidu Pan auto-save tab…"
-                );
+                showStatus(waitingMessage);
+                updateQueueEntry({
+                    state: "queued",
+                    detail: waitingMessage
+                });
                 lastQueueNotice = now;
             }
 
@@ -853,19 +1330,47 @@
         }
     }
 
-    async function withGlobalTransferLock(task) {
+    async function withNamedLock(
+        lockName,
+        fallbackLockKey,
+        task,
+        waitingMessage
+    ) {
         if (
             navigator.locks &&
             typeof navigator.locks.request === "function"
         ) {
             return navigator.locks.request(
-                GLOBAL_LOCK_NAME,
+                lockName,
                 {mode: "exclusive"},
                 task
             );
         }
 
-        return withFallbackLeaseLock(task);
+        return withFallbackLeaseLock(
+            fallbackLockKey,
+            task,
+            waitingMessage
+        );
+    }
+
+    async function withGlobalTransferLock(task) {
+        return withNamedLock(
+            GLOBAL_LOCK_NAME,
+            FALLBACK_LOCK_KEY,
+            task,
+            "Waiting for the next Baidu write slot…"
+        );
+    }
+
+    async function withJobLock(jobIdentity, task) {
+        const suffix = jobIdentity.key.slice(JOB_KEY_PREFIX.length);
+        return withNamedLock(
+            `baidupan-autosave-job-v1:${suffix}`,
+            `${FALLBACK_LOCK_KEY}:job:${suffix}`,
+            task,
+            "Waiting for an identical save job to finish…"
+        );
     }
 
     function hashString(value) {
@@ -971,6 +1476,10 @@
         jobIdentity
     ) {
         if (isJobComplete(jobIdentity)) {
+            updateQueueEntry({
+                state: "done",
+                detail: `Already saved to ${destinationPath}`
+            });
             showStatus(
                 `Already saved to ${destinationPath}; closing this tab…`
             );
@@ -980,7 +1489,15 @@
         showStatus(
             `Saving ${fsids.length} item(s) to ${destinationPath}…`
         );
+        updateQueueEntry({
+            state: "working",
+            detail: "Reading account details"
+        });
         const bdstoken = await getBdstoken(context.bdstoken);
+        updateQueueEntry({
+            state: "working",
+            detail: `Checking destination ${destinationPath}`
+        });
         await ensureDestinationFolder(destinationPath, bdstoken);
 
         const batchCount = Math.ceil(fsids.length / TRANSFER_BATCH_SIZE);
@@ -1000,6 +1517,11 @@
         }
 
         markJobComplete(jobIdentity);
+        updateQueueEntry({
+            state: "done",
+            detail: `Saved to ${destinationPath}`,
+            completedAt: Date.now()
+        });
         showStatus(`Saved to ${destinationPath}; closing this tab…`);
     }
 
@@ -1028,11 +1550,21 @@
         );
 
         try {
+            updateQueueEntry({
+                jobKey: jobIdentity.key,
+                shareId: String(context.shareId),
+                itemCount: fsids.length,
+                destinationPath,
+                state: "queued",
+                detail: "Waiting to start",
+                pageTitle: document.title || "Baidu Pan share"
+            });
             showStatus(
                 `Queued to save ${fsids.length} item(s) to ` +
                 `${destinationPath}…`
             );
-            await withGlobalTransferLock(
+            await withJobLock(
+                jobIdentity,
                 () => processTransferJob(
                     context,
                     fsids,
@@ -1046,6 +1578,12 @@
                 "[Baidu Pan Auto-Save] Automatic transfer failed:",
                 error
             );
+            updateQueueEntry({
+                state: "failed",
+                detail: String(error.message || error),
+                failedAt: Date.now(),
+                lastError: String(error.message || error)
+            });
             showStatus(`Automatic save failed: ${error.message}`, true);
         }
     }
@@ -1063,8 +1601,13 @@
             getRetryDelayMilliseconds,
             buildJobIdentity,
             withGlobalTransferLock,
+            performGlobalWrite,
+            fetchWithTimeout,
+            updateQueueEntry,
+            listQueueEntries,
             ensureSettingsButton,
-            mountSettingsButton
+            mountSettingsButton,
+            configureDestinationPath
         });
         return;
     }
@@ -1072,7 +1615,15 @@
     registerSettingsMenu();
     mountSettingsButton();
 
-    if (isPotentialSharePage()) {
+    if (
+        pageWindow.top === pageWindow.self &&
+        isPotentialSharePage()
+    ) {
+        window.addEventListener(
+            "beforeunload",
+            removeCurrentQueueEntry,
+            {once: true}
+        );
         void autoSaveCurrentShare();
     }
 })();

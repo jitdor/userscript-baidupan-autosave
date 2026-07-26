@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.0.3
+
+- Changed the global lock to cover one bounded Baidu write attempt instead of an entire job.
+- Released the write slot before retry backoff so failing jobs no longer block healthy tabs.
+- Added a 25-second timeout to Baidu requests so a hung fetch cannot hold the queue indefinitely.
+- Restricted transfer execution, not only the settings button, to top-level tabs.
+- Added a cross-tab queue panel with job state, elapsed time, write-slot status, retry details, and destination controls.
+- Limited global cooldowns to explicit rate-limit responses.
+
 ## 1.0.2
 
 - Restricted the on-page settings button to the top-level Baidu document, preventing duplicate buttons from same-origin iframes.
