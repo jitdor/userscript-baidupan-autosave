@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.2
+
+- Restricted the on-page settings button to the top-level Baidu document, preventing duplicate buttons from same-origin iframes.
+- Aligned the userscript metadata, package, and GitHub release versions at `1.0.2`.
+
 ## 1.0.1
 
 - Added an always-visible **⚙ Auto-save** settings button on Baidu Pan pages.
@@ -16,4 +21,4 @@
 - Made transfer retries idempotent and included the destination in duplicate-job detection.
 - Added stable raw install and update URLs.
 
-The initial distributable used metadata version `1.4.0` so installations of the supplied `1.3.0` script recognized it as an update. Release 1.0.1 uses userscript metadata version `1.4.1`.
+The initial distributable used metadata version `1.4.0`, and release 1.0.1 used `1.4.1`. Starting with release 1.0.2, the userscript metadata and GitHub release versions stay aligned.

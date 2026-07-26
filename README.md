@@ -8,6 +8,8 @@ A userscript for Edge, Chrome, and other compatible browsers that automatically 
 
 Open that link with Tampermonkey, AdGuard, or another userscript manager. The script's `@updateURL` and `@downloadURL` both point to the file on the `main` branch, so normal periodic update checks always follow the latest stable version.
 
+Starting with `1.0.2`, the userscript metadata version, package version, and GitHub release version are kept identical.
+
 ## Configure the destination
 
 The default destination is `/wckbot16`.

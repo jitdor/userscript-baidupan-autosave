@@ -35,6 +35,8 @@ function loadTestApi(overrides = {}) {
         ...overrides
     };
     context.window = context;
+    context.self = context;
+    if (!Object.hasOwn(context, "top")) context.top = context;
     context.globalThis = context;
     vm.createContext(context);
     vm.runInContext(source, context);
@@ -44,12 +46,47 @@ function loadTestApi(overrides = {}) {
 const api = loadTestApi();
 
 test("metadata exposes a stable raw update URL", () => {
-    assert.match(source, /@version\s+1\.4\.1/);
+    assert.match(source, /@version\s+1\.0\.2/);
     assert.match(
         source,
         /@updateURL\s+https:\/\/raw\.githubusercontent\.com\/jitdor\/userscript-baidupan-autosave\/main\/baidupan-autosave\.user\.js/
     );
     assert.match(source, /@grant\s+GM_registerMenuCommand/);
+});
+
+test("the settings control only mounts in the top-level document", () => {
+    const topElements = [];
+    const topDocument = {
+        body: {
+            appendChild(element) {
+                topElements.push(element);
+            }
+        },
+        documentElement: null,
+        querySelector: () => null,
+        createElement: () => ({
+            style: {},
+            setAttribute() {},
+            addEventListener() {}
+        }),
+        addEventListener() {}
+    };
+    const topApi = loadTestApi({document: topDocument});
+    assert.equal(topApi.mountSettingsButton(), true);
+    assert.equal(topElements.length, 1);
+
+    const frameElements = [];
+    const frameDocument = {
+        ...topDocument,
+        body: {
+            appendChild(element) {
+                frameElements.push(element);
+            }
+        }
+    };
+    const frameApi = loadTestApi({document: frameDocument, top: {}});
+    assert.equal(frameApi.mountSettingsButton(), false);
+    assert.equal(frameElements.length, 0);
 });
 
 test("the on-page control saves a normalized destination", async () => {

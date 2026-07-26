@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Baidu Pan Auto-Save
 // @namespace    https://github.com/jitdor/userscript-baidupan-autosave
-// @version      1.4.1
+// @version      1.0.2
 // @description  Automatically queues and saves unlocked Baidu Pan shares to a configurable folder.
 // @author       jitdor
 // @homepageURL  https://github.com/jitdor/userscript-baidupan-autosave
@@ -231,9 +231,11 @@
     }
 
     function mountSettingsButton() {
+        if (window.top !== window.self) return false;
+
         if (document.body) {
             ensureSettingsButton();
-            return;
+            return true;
         }
 
         document.addEventListener(
@@ -241,6 +243,7 @@
             ensureSettingsButton,
             {once: true}
         );
+        return true;
     }
 
     function readLocalValue(locals, key) {
@@ -1060,7 +1063,8 @@
             getRetryDelayMilliseconds,
             buildJobIdentity,
             withGlobalTransferLock,
-            ensureSettingsButton
+            ensureSettingsButton,
+            mountSettingsButton
         });
         return;
     }
