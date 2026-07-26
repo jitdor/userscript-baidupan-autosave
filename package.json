@@ -1,6 +1,6 @@
 {
   "name": "userscript-baidupan-autosave",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "Queue and auto-save Baidu Pan shares to a configurable cloud folder.",
   "scripts": {

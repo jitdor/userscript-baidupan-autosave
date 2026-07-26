@@ -12,11 +12,15 @@ Open that link with Tampermonkey, AdGuard, or another userscript manager. The sc
 
 The default destination is `/wckbot16`.
 
-1. Open the userscript manager menu while on Baidu Pan.
-2. Select **Set destination folder…**.
+On AdGuard for Mac:
+
+1. Open any `pan.baidu.com` page.
+2. Click **⚙ Auto-save** in the lower-right corner.
 3. Enter an absolute folder path such as `/incoming/baidu`.
 
-Nested folders are created automatically. The setting is stored by the userscript manager and applies to future save jobs. Use **Reset destination folder** to restore `/wckbot16`.
+On Tampermonkey or another manager that supports userscript menu commands, you can instead open its userscript menu and select **Set destination folder…**.
+
+Nested folders are created automatically. The setting is stored by the userscript manager and applies to future save jobs. The on-page button shows the current destination in its tooltip. Use **Reset destination folder** from a supported userscript menu, or enter `/wckbot16` through the button, to restore the default.
 
 ## How concurrency is handled
 

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Baidu Pan Auto-Save
 // @namespace    https://github.com/jitdor/userscript-baidupan-autosave
-// @version      1.4.0
+// @version      1.4.1
 // @description  Automatically queues and saves unlocked Baidu Pan shares to a configurable folder.
 // @author       jitdor
 // @homepageURL  https://github.com/jitdor/userscript-baidupan-autosave
@@ -145,6 +145,7 @@
         try {
             const nextPath = normalizeDestinationPath(enteredPath);
             await setSetting(DESTINATION_SETTING_KEY, nextPath);
+            updateSettingsButtonTitle(nextPath);
             showStatus(
                 `Destination changed to ${nextPath}. It will apply to new jobs.`
             );
@@ -167,10 +168,78 @@
                     DESTINATION_SETTING_KEY,
                     DEFAULT_DESTINATION_PATH
                 );
+                updateSettingsButtonTitle(DEFAULT_DESTINATION_PATH);
                 showStatus(
                     `Destination reset to ${DEFAULT_DESTINATION_PATH}.`
                 );
             }
+        );
+    }
+
+    function updateSettingsButtonTitle(destinationPath) {
+        const button = document.querySelector(
+            "#baidupan-autosave-settings"
+        );
+        if (!button) return;
+
+        button.title =
+            `Current destination: ${destinationPath}\n` +
+            "Click to change the Baidu Pan auto-save destination.";
+    }
+
+    function ensureSettingsButton() {
+        let button = document.querySelector(
+            "#baidupan-autosave-settings"
+        );
+        if (button) return button;
+
+        button = document.createElement("button");
+        button.id = "baidupan-autosave-settings";
+        button.type = "button";
+        button.setAttribute(
+            "aria-label",
+            "Configure Baidu Pan auto-save destination"
+        );
+        button.textContent = "⚙ Auto-save";
+        Object.assign(button.style, {
+            position: "fixed",
+            right: "18px",
+            bottom: "18px",
+            zIndex: "2147483647",
+            padding: "8px 11px",
+            border: "1px solid rgba(255,255,255,.35)",
+            borderRadius: "7px",
+            color: "#fff",
+            background: "#1f2937",
+            boxShadow: "0 2px 10px rgba(0,0,0,.25)",
+            font: "600 12px/1.4 sans-serif",
+            cursor: "pointer",
+            opacity: "0.92"
+        });
+        button.addEventListener("click", (event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            void configureDestinationPath();
+        });
+
+        const parent = document.documentElement || document.body;
+        if (!parent) return null;
+
+        parent.appendChild(button);
+        void getDestinationPath().then(updateSettingsButtonTitle);
+        return button;
+    }
+
+    function mountSettingsButton() {
+        if (document.body) {
+            ensureSettingsButton();
+            return;
+        }
+
+        document.addEventListener(
+            "DOMContentLoaded",
+            ensureSettingsButton,
+            {once: true}
         );
     }
 
@@ -853,7 +922,7 @@
             Object.assign(element.style, {
                 position: "fixed",
                 right: "18px",
-                bottom: "18px",
+                bottom: "64px",
                 zIndex: "2147483647",
                 maxWidth: "360px",
                 padding: "9px 13px",
@@ -990,12 +1059,14 @@
             isRetryableError,
             getRetryDelayMilliseconds,
             buildJobIdentity,
-            withGlobalTransferLock
+            withGlobalTransferLock,
+            ensureSettingsButton
         });
         return;
     }
 
     registerSettingsMenu();
+    mountSettingsButton();
 
     if (isPotentialSharePage()) {
         void autoSaveCurrentShare();

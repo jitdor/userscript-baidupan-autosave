@@ -44,12 +44,67 @@ function loadTestApi(overrides = {}) {
 const api = loadTestApi();
 
 test("metadata exposes a stable raw update URL", () => {
-    assert.match(source, /@version\s+1\.4\.0/);
+    assert.match(source, /@version\s+1\.4\.1/);
     assert.match(
         source,
         /@updateURL\s+https:\/\/raw\.githubusercontent\.com\/jitdor\/userscript-baidupan-autosave\/main\/baidupan-autosave\.user\.js/
     );
     assert.match(source, /@grant\s+GM_registerMenuCommand/);
+});
+
+test("the on-page control saves a normalized destination", async () => {
+    const elements = new Map();
+    let savedDestination;
+    const parent = {
+        appendChild(element) {
+            elements.set(`#${element.id}`, element);
+        }
+    };
+    const document = {
+        documentElement: parent,
+        body: null,
+        querySelector(selector) {
+            return elements.get(selector) || null;
+        },
+        createElement(tagName) {
+            return {
+                tagName,
+                style: {},
+                setAttribute(name, value) {
+                    this[name] = value;
+                },
+                addEventListener(name, listener) {
+                    this.listeners ||= {};
+                    this.listeners[name] = listener;
+                }
+            };
+        }
+    };
+    const controlApi = loadTestApi({
+        document,
+        prompt: () => " /adguard//incoming/ ",
+        alert: (message) => assert.fail(message),
+        GM_getValue: (_key, fallback) => fallback,
+        GM_setValue: (_key, value) => {
+            savedDestination = value;
+        }
+    });
+    const first = controlApi.ensureSettingsButton();
+    const second = controlApi.ensureSettingsButton();
+
+    assert.equal(first, second);
+    assert.equal(first.tagName, "button");
+    assert.equal(first.textContent, "⚙ Auto-save");
+    assert.equal(first.style.position, "fixed");
+    assert.equal(typeof first.listeners.click, "function");
+
+    first.listeners.click({
+        preventDefault() {},
+        stopPropagation() {}
+    });
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(savedDestination, "/adguard/incoming");
+    assert.match(first.title, /Current destination: \/adguard\/incoming/);
 });
 
 test("destination paths are normalized", () => {
