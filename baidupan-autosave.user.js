@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Baidu Pan Auto-Save
 // @namespace    https://github.com/jitdor/userscript-baidupan-autosave
-// @version      1.0.3
+// @version      1.0.4
 // @description  Automatically queues and saves unlocked Baidu Pan shares to a configurable folder.
 // @author       jitdor
 // @homepageURL  https://github.com/jitdor/userscript-baidupan-autosave
@@ -40,6 +40,23 @@
     const QUEUE_TERMINAL_RETENTION_MILLISECONDS = 120000;
     const QUEUE_STALE_MILLISECONDS = 600000;
     const QUEUE_PANEL_REFRESH_MILLISECONDS = 1000;
+    const NAVIGATION_LOCK_NAME =
+        "baidupan-autosave-navigation-state-v1";
+    const NAVIGATION_LOCK_KEY =
+        "baidupan-autosave:navigation-state-lock-v1";
+    const NAVIGATION_SEQUENCE_KEY =
+        "baidupan-autosave:navigation-sequence-v1";
+    const NAVIGATION_QUEUE_PREFIX =
+        "baidupan-autosave:navigation-queue-v1:";
+    const NAVIGATION_SLOT_PREFIX =
+        "baidupan-autosave:navigation-slot-v1:";
+    const NAVIGATION_SESSION_KEY =
+        "baidupan-autosave:navigation-session-v1";
+    const NAVIGATION_SECOND_LANE_DELAY_MILLISECONDS = 10000;
+    const NAVIGATION_SLOT_LEASE_MILLISECONDS = 30000;
+    const NAVIGATION_SLOT_HEARTBEAT_MILLISECONDS = 5000;
+    const NAVIGATION_QUEUE_STALE_MILLISECONDS = 900000;
+    const NAVIGATION_POLL_MILLISECONDS = 250;
     const OWNER_ID =
         `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
     const pageWindow =
@@ -47,6 +64,7 @@
     const currentQueueEntryKey = `${QUEUE_ENTRY_PREFIX}${OWNER_ID}`;
     let queuePanelRefreshTimer = null;
     let queueListenersRegistered = false;
+    let navigationHeartbeatTimer = null;
 
     const sleep = (milliseconds) =>
         new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -95,6 +113,379 @@
             url.searchParams.has("surl") ||
             url.searchParams.has("shareid")
         );
+    }
+
+    function readNavigationSession() {
+        try {
+            const value = sessionStorage.getItem(NAVIGATION_SESSION_KEY);
+            return value ? JSON.parse(value) : null;
+        } catch (_) {
+            return null;
+        }
+    }
+
+    function writeNavigationSession(value) {
+        try {
+            sessionStorage.setItem(
+                NAVIGATION_SESSION_KEY,
+                JSON.stringify(value)
+            );
+        } catch (_) {
+            // The tab can still use its in-memory owner ID without persistence.
+        }
+    }
+
+    function getNavigationTabId() {
+        const session = readNavigationSession();
+        if (session && session.tabId) return session.tabId;
+
+        const tabId =
+            `${Date.now().toString(36)}-` +
+            `${Math.random().toString(36).slice(2)}`;
+        writeNavigationSession({tabId});
+        return tabId;
+    }
+
+    function navigationQueueKey(tabId) {
+        return `${NAVIGATION_QUEUE_PREFIX}${tabId}`;
+    }
+
+    function navigationSlotKey(lane) {
+        return `${NAVIGATION_SLOT_PREFIX}${lane}`;
+    }
+
+    function readNavigationSlot(lane) {
+        return readJsonStorage(navigationSlotKey(lane));
+    }
+
+    function isNavigationSlotLive(slot, now = Date.now()) {
+        return Boolean(slot && Number(slot.expiresAt || 0) > now);
+    }
+
+    function listNavigationRequests(now = Date.now()) {
+        const requests = [];
+
+        try {
+            for (
+                let index = localStorage.length - 1;
+                index >= 0;
+                index -= 1
+            ) {
+                const key = localStorage.key(index);
+                if (!key || !key.startsWith(NAVIGATION_QUEUE_PREFIX)) {
+                    continue;
+                }
+
+                const request = readJsonStorage(key);
+                const age =
+                    now - Number(
+                        request && (
+                            request.updatedAt ||
+                            request.enqueuedAt
+                        )
+                    );
+
+                if (
+                    !request ||
+                    !Number.isFinite(age) ||
+                    age > NAVIGATION_QUEUE_STALE_MILLISECONDS
+                ) {
+                    removeStorageValue(key);
+                    continue;
+                }
+
+                requests.push(request);
+            }
+        } catch (_) {
+            return [];
+        }
+
+        return requests.sort(
+            (left, right) =>
+                Number(left.sequence) - Number(right.sequence) ||
+                Number(left.enqueuedAt) - Number(right.enqueuedAt) ||
+                String(left.tabId).localeCompare(String(right.tabId))
+        );
+    }
+
+    function cleanupNavigationState(now = Date.now()) {
+        for (let lane = 0; lane < 2; lane += 1) {
+            const slot = readNavigationSlot(lane);
+            if (slot && !isNavigationSlotLive(slot, now)) {
+                removeStorageValue(navigationSlotKey(lane));
+                removeStorageValue(navigationQueueKey(slot.tabId));
+            }
+        }
+
+        return listNavigationRequests(now);
+    }
+
+    function registerNavigationRequest(tabId, now = Date.now()) {
+        const existing = readJsonStorage(navigationQueueKey(tabId));
+        if (existing) {
+            const next = {...existing, updatedAt: now};
+            writeStorageValue(
+                navigationQueueKey(tabId),
+                JSON.stringify(next)
+            );
+            return next;
+        }
+
+        const requests = cleanupNavigationState(now);
+        const liveSlots = [0, 1]
+            .map(readNavigationSlot)
+            .filter((slot) => isNavigationSlotLive(slot, now));
+        let sequenceState = readJsonStorage(NAVIGATION_SEQUENCE_KEY);
+
+        if (!requests.length && !liveSlots.length) {
+            sequenceState = {
+                nextSequence: 0,
+                burstStartedAt: now
+            };
+        } else if (!sequenceState) {
+            const highestSequence = requests.reduce(
+                (highest, request) =>
+                    Math.max(highest, Number(request.sequence || 0)),
+                -1
+            );
+            sequenceState = {
+                nextSequence: highestSequence + 1,
+                burstStartedAt: now
+            };
+        }
+
+        const sequence = Number(sequenceState.nextSequence || 0);
+        const lane = sequence % 2;
+        const request = {
+            tabId,
+            sequence,
+            lane,
+            enqueuedAt: now,
+            updatedAt: now,
+            notBefore:
+                sequence === 1
+                    ? Number(sequenceState.burstStartedAt) +
+                        NAVIGATION_SECOND_LANE_DELAY_MILLISECONDS
+                    : now
+        };
+
+        writeStorageValue(
+            navigationQueueKey(tabId),
+            JSON.stringify(request)
+        );
+        writeStorageValue(
+            NAVIGATION_SEQUENCE_KEY,
+            JSON.stringify({
+                nextSequence: sequence + 1,
+                burstStartedAt: Number(sequenceState.burstStartedAt)
+            })
+        );
+        return request;
+    }
+
+    function tryClaimNavigationSlot(tabId, now = Date.now()) {
+        cleanupNavigationState(now);
+        const request = readJsonStorage(navigationQueueKey(tabId));
+        if (!request) return null;
+
+        const existingSlot = readNavigationSlot(request.lane);
+        if (
+            isNavigationSlotLive(existingSlot, now) &&
+            existingSlot.tabId === tabId
+        ) {
+            const renewedSlot = {
+                ...existingSlot,
+                heartbeatAt: now,
+                expiresAt: now + NAVIGATION_SLOT_LEASE_MILLISECONDS
+            };
+            writeStorageValue(
+                navigationSlotKey(request.lane),
+                JSON.stringify(renewedSlot)
+            );
+            return renewedSlot;
+        }
+
+        if (isNavigationSlotLive(existingSlot, now)) return null;
+        if (now < Number(request.notBefore || 0)) return null;
+
+        const firstForLane = listNavigationRequests(now).find(
+            (candidate) => Number(candidate.lane) === Number(request.lane)
+        );
+        if (!firstForLane || firstForLane.tabId !== tabId) return null;
+
+        const slot = {
+            tabId,
+            lane: Number(request.lane),
+            sequence: Number(request.sequence),
+            acquiredAt: now,
+            heartbeatAt: now,
+            expiresAt: now + NAVIGATION_SLOT_LEASE_MILLISECONDS
+        };
+        writeStorageValue(
+            navigationSlotKey(request.lane),
+            JSON.stringify(slot)
+        );
+
+        const confirmed = readNavigationSlot(request.lane);
+        return confirmed && confirmed.tabId === tabId
+            ? confirmed
+            : null;
+    }
+
+    function renewNavigationSlot(tabId, now = Date.now()) {
+        const session = readNavigationSession();
+        const lane = session && Number(session.lane);
+        if (lane !== 0 && lane !== 1) return false;
+
+        const slot = readNavigationSlot(lane);
+        if (!isNavigationSlotLive(slot, now) || slot.tabId !== tabId) {
+            return false;
+        }
+
+        writeStorageValue(
+            navigationSlotKey(lane),
+            JSON.stringify({
+                ...slot,
+                heartbeatAt: now,
+                expiresAt: now + NAVIGATION_SLOT_LEASE_MILLISECONDS
+            })
+        );
+        return true;
+    }
+
+    function startNavigationHeartbeat(tabId) {
+        if (navigationHeartbeatTimer) {
+            clearInterval(navigationHeartbeatTimer);
+        }
+
+        navigationHeartbeatTimer = setInterval(() => {
+            renewNavigationSlot(tabId);
+        }, NAVIGATION_SLOT_HEARTBEAT_MILLISECONDS);
+    }
+
+    function resumeOwnedNavigationSlot(now = Date.now()) {
+        const session = readNavigationSession();
+        if (!session || !session.tabId) return false;
+        if (!renewNavigationSlot(session.tabId, now)) return false;
+
+        startNavigationHeartbeat(session.tabId);
+        return true;
+    }
+
+    function releaseNavigationSlot(tabId = getNavigationTabId()) {
+        if (navigationHeartbeatTimer) {
+            clearInterval(navigationHeartbeatTimer);
+            navigationHeartbeatTimer = null;
+        }
+
+        for (let lane = 0; lane < 2; lane += 1) {
+            const slot = readNavigationSlot(lane);
+            if (slot && slot.tabId === tabId) {
+                removeStorageValue(navigationSlotKey(lane));
+            }
+        }
+
+        removeStorageValue(navigationQueueKey(tabId));
+        writeNavigationSession({tabId});
+    }
+
+    async function withNavigationStateLock(task) {
+        if (
+            navigator.locks &&
+            typeof navigator.locks.request === "function"
+        ) {
+            return navigator.locks.request(
+                NAVIGATION_LOCK_NAME,
+                {mode: "exclusive"},
+                task
+            );
+        }
+
+        return withFallbackLeaseLock(
+            NAVIGATION_LOCK_KEY,
+            task,
+            "Waiting for a Baidu page-load slot…"
+        );
+    }
+
+    function showNavigationWaiting(request, now = Date.now()) {
+        const delay = Math.max(0, Number(request.notBefore || 0) - now);
+        const seconds = Math.ceil(delay / 1000);
+        const message = delay > 0
+            ? `Waiting ${seconds}s before loading this Baidu share…`
+            : `Waiting for Baidu loading lane ${Number(request.lane) + 1}…`;
+
+        document.title = message;
+        const parent = document.documentElement || document.body;
+        if (!parent) return;
+
+        let status = document.querySelector(
+            "#baidupan-autosave-navigation-wait"
+        );
+        if (!status) {
+            status = document.createElement("div");
+            status.id = "baidupan-autosave-navigation-wait";
+            Object.assign(status.style, {
+                position: "fixed",
+                inset: "0",
+                zIndex: "2147483647",
+                display: "grid",
+                placeItems: "center",
+                padding: "24px",
+                color: "#fff",
+                background: "#111827",
+                font: "600 16px/1.5 sans-serif",
+                textAlign: "center"
+            });
+            parent.appendChild(status);
+        }
+        status.textContent = message;
+    }
+
+    async function queueNavigationPageLoad() {
+        const tabId = getNavigationTabId();
+        let reloadPending = false;
+        let pageHidden = false;
+        window.addEventListener(
+            "pagehide",
+            () => {
+                pageHidden = true;
+                if (!reloadPending) releaseNavigationSlot(tabId);
+            },
+            {once: true}
+        );
+        const request = await withNavigationStateLock(
+            () => registerNavigationRequest(tabId)
+        );
+        if (pageHidden) {
+            releaseNavigationSlot(tabId);
+            return;
+        }
+
+        while (true) {
+            if (pageHidden) return;
+            const now = Date.now();
+            showNavigationWaiting(request, now);
+            const slot = await withNavigationStateLock(
+                () => tryClaimNavigationSlot(tabId)
+            );
+
+            if (pageHidden) {
+                releaseNavigationSlot(tabId);
+                return;
+            }
+            if (slot) {
+                writeNavigationSession({
+                    tabId,
+                    lane: Number(slot.lane)
+                });
+                reloadPending = true;
+                location.reload();
+                return;
+            }
+
+            await sleep(NAVIGATION_POLL_MILLISECONDS);
+        }
     }
 
     function normalizeDestinationPath(value) {
@@ -1456,6 +1847,7 @@
         if (!AUTO_CLOSE_AFTER_SUCCESS) return;
 
         setTimeout(() => {
+            releaseNavigationSlot();
             window.close();
 
             setTimeout(() => {
@@ -1530,6 +1922,7 @@
         const context = await waitForShareContext();
 
         if (!context) {
+            releaseNavigationSlot();
             showStatus(
                 "Auto-save could not read this share. Open the console for details.",
                 true
@@ -1541,7 +1934,10 @@
             .map((file) => file && file.fs_id)
             .filter(Boolean);
 
-        if (!fsids.length) return;
+        if (!fsids.length) {
+            releaseNavigationSlot();
+            return;
+        }
 
         const jobIdentity = buildJobIdentity(
             context,
@@ -1574,6 +1970,7 @@
             );
             closeTabAfterSuccess();
         } catch (error) {
+            releaseNavigationSlot();
             console.error(
                 "[Baidu Pan Auto-Save] Automatic transfer failed:",
                 error
@@ -1607,8 +2004,24 @@
             listQueueEntries,
             ensureSettingsButton,
             mountSettingsButton,
-            configureDestinationPath
+            configureDestinationPath,
+            registerNavigationRequest,
+            tryClaimNavigationSlot,
+            renewNavigationSlot,
+            releaseNavigationSlot,
+            listNavigationRequests,
+            cleanupNavigationState
         });
+        return;
+    }
+
+    if (
+        pageWindow.top === pageWindow.self &&
+        isPotentialSharePage() &&
+        !resumeOwnedNavigationSlot()
+    ) {
+        window.stop();
+        void queueNavigationPageLoad();
         return;
     }
 

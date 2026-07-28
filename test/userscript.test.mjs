@@ -122,6 +122,7 @@ function loadTestApi(overrides = {}) {
         clearInterval,
         console,
         localStorage: createMemoryStorage(),
+        sessionStorage: createMemoryStorage(),
         addEventListener() {},
         navigator: {
             locks: {
@@ -142,12 +143,73 @@ function loadTestApi(overrides = {}) {
 const api = loadTestApi();
 
 test("metadata exposes a stable raw update URL", () => {
-    assert.match(source, /@version\s+1\.0\.3/);
+    assert.match(source, /@version\s+1\.0\.4/);
     assert.match(
         source,
         /@updateURL\s+https:\/\/raw\.githubusercontent\.com\/jitdor\/userscript-baidupan-autosave\/main\/baidupan-autosave\.user\.js/
     );
     assert.match(source, /@grant\s+GM_registerMenuCommand/);
+});
+
+test("share-page startup alternates across two close-driven lanes", () => {
+    const sharedStorage = createMemoryStorage();
+    const firstApi = loadTestApi({localStorage: sharedStorage});
+    const secondApi = loadTestApi({localStorage: sharedStorage});
+    const thirdApi = loadTestApi({localStorage: sharedStorage});
+    const fourthApi = loadTestApi({localStorage: sharedStorage});
+
+    const first = firstApi.registerNavigationRequest("first", 1000);
+    assert.equal(first.sequence, 0);
+    assert.equal(first.lane, 0);
+    assert.ok(firstApi.tryClaimNavigationSlot("first", 1000));
+
+    const second = secondApi.registerNavigationRequest("second", 1001);
+    assert.equal(second.sequence, 1);
+    assert.equal(second.lane, 1);
+    assert.equal(second.notBefore, 11000);
+    assert.equal(
+        secondApi.tryClaimNavigationSlot("second", 10999),
+        null
+    );
+    assert.ok(secondApi.tryClaimNavigationSlot("second", 11000));
+
+    const third = thirdApi.registerNavigationRequest("third", 1002);
+    const fourth = fourthApi.registerNavigationRequest("fourth", 1003);
+    assert.equal(third.lane, 0);
+    assert.equal(fourth.lane, 1);
+    assert.equal(
+        thirdApi.tryClaimNavigationSlot("third", 12000),
+        null
+    );
+    assert.equal(
+        fourthApi.tryClaimNavigationSlot("fourth", 12000),
+        null
+    );
+
+    firstApi.releaseNavigationSlot("first");
+    assert.ok(thirdApi.tryClaimNavigationSlot("third", 12000));
+    assert.equal(
+        fourthApi.tryClaimNavigationSlot("fourth", 12000),
+        null
+    );
+
+    secondApi.releaseNavigationSlot("second");
+    assert.ok(fourthApi.tryClaimNavigationSlot("fourth", 12000));
+});
+
+test("a new page-load burst starts again on the immediate lane", () => {
+    const sharedStorage = createMemoryStorage();
+    const firstApi = loadTestApi({localStorage: sharedStorage});
+    const nextApi = loadTestApi({localStorage: sharedStorage});
+
+    firstApi.registerNavigationRequest("first", 1000);
+    assert.ok(firstApi.tryClaimNavigationSlot("first", 1000));
+    firstApi.releaseNavigationSlot("first");
+
+    const next = nextApi.registerNavigationRequest("next", 2000);
+    assert.equal(next.sequence, 0);
+    assert.equal(next.lane, 0);
+    assert.ok(nextApi.tryClaimNavigationSlot("next", 2000));
 });
 
 test("the settings control only mounts in the top-level document", () => {
