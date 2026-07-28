@@ -29,6 +29,14 @@ Nested folders are created automatically. The setting is stored by the userscrip
 
 Opening many share links no longer starts many transfers at once:
 
+- Share-page startup uses two alternating lanes. The first tab resumes
+  immediately, the second resumes after ten seconds, the third waits for the
+  first tab to finish, the fourth waits for the second tab, and so on.
+- Waiting tabs stop at `document-start` before Baidu's page application and
+  unlock requests run, then reload when their lane becomes available.
+- A successful auto-save releases its page-load lane immediately before the
+  tab closes. Terminal failures also release the lane so later tabs can
+  continue.
 - Each Baidu write attempt joins one exclusive browser queue.
 - A persisted delay spaces out Baidu write requests.
 - Each job is checked again after it reaches the front of the queue, preventing duplicate work.
@@ -40,7 +48,10 @@ Opening many share links no longer starts many transfers at once:
 
 Click **⚙ Auto-save** to open the live queue panel. It shows active and recent jobs, elapsed time, current phase, retries, destination, and whether the shared write slot is busy. Completed and failed entries can be cleared from the panel.
 
-The lock is released automatically if a queued or active tab closes. Leave queued tabs open until their status changes to success or failure.
+The write lock is released automatically if a queued or active tab closes.
+Page-load lanes use renewable leases as a fallback when a tab is closed
+manually or crashes. Leave queued tabs open until their status changes to
+success or failure.
 
 ## Notes
 

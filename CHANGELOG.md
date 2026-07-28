@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.0.4
+
+- Added a two-lane page-load gate for Baidu share tabs to reduce concurrent
+  unlock and rendering requests.
+- Kept the first lane available immediately and delayed the second lane by ten
+  seconds at the start of each burst.
+- Released each lane when its save succeeds, fails terminally, or cannot read
+  the share, allowing the next alternating tab to resume.
+- Added renewable slot leases so a manually closed or crashed tab cannot block
+  the page-load queue permanently.
+
 ## 1.0.3
 
 - Changed the global lock to cover one bounded Baidu write attempt instead of an entire job.
