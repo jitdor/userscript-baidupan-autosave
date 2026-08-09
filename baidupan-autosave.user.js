@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Baidu Pan Auto-Save
 // @namespace    https://github.com/jitdor/userscript-baidupan-autosave
-// @version      1.0.4
+// @version      1.0.5
 // @description  Automatically queues and saves unlocked Baidu Pan shares to a configurable folder.
 // @author       jitdor
 // @homepageURL  https://github.com/jitdor/userscript-baidupan-autosave
@@ -1251,6 +1251,13 @@
         return !permanentPattern.test(message);
     }
 
+    function isExtractionCodeError(error) {
+        return Boolean(
+            error &&
+            String(error.message || "").includes("提取码输入错误")
+        );
+    }
+
     function getRetryDelayMilliseconds(error, failedAttemptIndex) {
         if (error && error.retryAfterMilliseconds > 0) {
             return Math.min(
@@ -1342,6 +1349,27 @@
                 return await operation(attempt);
             } catch (error) {
                 lastError = error;
+
+                if (isExtractionCodeError(error)) {
+                    updateQueueEntry({
+                        state: "retrying",
+                        detail:
+                            `${label} failed; extraction code is invalid, ` +
+                            "reloading page…",
+                        lastError: String(error.message || error)
+                    });
+                    showStatus(
+                        "Extraction code is invalid; reloading page…",
+                        true
+                    );
+                    console.warn(
+                        `[Baidu Pan Auto-Save] ${label} failed: ` +
+                        "extraction code is invalid; reloading the page",
+                        error
+                    );
+                    location.reload();
+                    throw error;
+                }
 
                 if (
                     attempt === maximumAttempts - 1 ||
@@ -1995,6 +2023,7 @@
             normalizeDestinationPath,
             destinationAncestors,
             isRetryableError,
+            isExtractionCodeError,
             getRetryDelayMilliseconds,
             buildJobIdentity,
             withGlobalTransferLock,

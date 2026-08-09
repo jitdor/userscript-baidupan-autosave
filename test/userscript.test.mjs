@@ -143,7 +143,7 @@ function loadTestApi(overrides = {}) {
 const api = loadTestApi();
 
 test("metadata exposes a stable raw update URL", () => {
-    assert.match(source, /@version\s+1\.0\.4/);
+    assert.match(source, /@version\s+1\.0\.5/);
     assert.match(
         source,
         /@updateURL\s+https:\/\/raw\.githubusercontent\.com\/jitdor\/userscript-baidupan-autosave\/main\/baidupan-autosave\.user\.js/
@@ -321,6 +321,26 @@ test("retry classification stops on permanent account/share failures", () => {
     const transient = new Error("HTTP 429");
     transient.transient = true;
     assert.equal(api.isRetryableError(transient), true);
+});
+
+test("extraction code errors are detected for an immediate reload", () => {
+    assert.equal(
+        api.isExtractionCodeError(
+            new Error("提取码输入错误，请重试")
+        ),
+        true
+    );
+    assert.equal(
+        api.isExtractionCodeError(
+            new Error("Baidu transfer error -62: 提取码输入错误，请重试")
+        ),
+        true
+    );
+    assert.equal(
+        api.isExtractionCodeError(new Error("temporary transfer failure")),
+        false
+    );
+    assert.equal(api.isExtractionCodeError(null), false);
 });
 
 test("retry delays honor Retry-After", () => {

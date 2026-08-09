@@ -1,5 +1,10 @@
 # Changelog
 
+## 1.0.5
+
+- Reload the page immediately when Baidu reports an invalid extraction code
+  (`提取码输入错误，请重试`) instead of retrying the request with backoff.
+
 ## 1.0.4
 
 - Added a two-lane page-load gate for Baidu share tabs to reduce concurrent
