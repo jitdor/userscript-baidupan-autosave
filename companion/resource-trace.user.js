@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ResourceTrace — purchased resource provenance
 // @namespace    local.resourcetrace
-// @version      1.0.6
+// @version      1.0.7
 // @homepageURL  https://github.com/jitdor/userscript-baidupan-autosave
 // @updateURL    https://raw.githubusercontent.com/jitdor/userscript-baidupan-autosave/main/companion/resource-trace.user.js
 // @downloadURL  https://raw.githubusercontent.com/jitdor/userscript-baidupan-autosave/main/companion/resource-trace.user.js
@@ -42,10 +42,22 @@
     }
     return true;
   }
-  function parsePurchased(title, sourceURL, text, hrefs) {
+  function passcodeLink(raw, expectedKey) {
+    try {
+      const u = new URL(raw), pwd = u.searchParams.get('pwd');
+      return raw.length <= 8192 && u.protocol === 'https:' && u.hostname === 'pan.baidu.com' && !u.username && !u.password && (!u.port || u.port === '443') && /^\/s\/1[A-Za-z0-9_-]+\/?$/.test(u.pathname) && shareKey(raw) === expectedKey && pwd && pwd.length <= 128 && !/[\s\x00-\x1f\x7f]/.test(pwd) ? raw : null;
+    } catch { return null; }
+  }
+  function parsePurchased(title, sourceURL, text, hrefs, injectedHrefs = []) {
     if (!title || !text.includes('隐藏内容')) return [];
     const urls = new Set([...(text.match(/https:\/\/pan\.baidu\.com\/s\/1[A-Za-z0-9_-]+(?:\?[^\s<>，。]*)?/g) || []), ...hrefs]);
-    return [...urls].filter(shareKey).map(baiduURL => ({ kind: 'source', title: title.trim(), sourceURL, baiduURL, notes: text.slice(0, 30000), purchasedVisible: true }));
+    return [...urls].filter(shareKey).map(baiduURL => {
+      const capture = { kind: 'source', title: title.trim(), sourceURL, baiduURL, notes: text.slice(0, 30000), purchasedVisible: true };
+      const key = shareKey(baiduURL);
+      const candidates = [...new Set([...injectedHrefs, ...hrefs, baiduURL].map(raw => passcodeLink(raw, key)).filter(Boolean))];
+      if (candidates.length === 1) capture.directURL = candidates[0];
+      return capture;
+    });
   }
   // Synchronous SHA-256 is used only for queue identity, so capturing a short-lived
   // tab never awaits WebCrypto before writing the evidence to manager storage.
@@ -83,7 +95,7 @@
     } catch { return null; }
   }
   // Pure helpers are exported only to the offline test harness.
-  if (typeof module !== 'undefined' && module.exports) { module.exports = { shareKey, archiveName, visible, parsePurchased, captureID, pngDimensions }; return; }
+  if (typeof module !== 'undefined' && module.exports) { module.exports = { shareKey, archiveName, visible, parsePurchased, passcodeLink, captureID, pngDimensions }; return; }
 
   const endpoint = 'http://127.0.0.1:49731/capture';
   let token = GM_getValue('token', '');
@@ -276,13 +288,14 @@
     const heading = document.querySelector('h1.entry-title');
     if (!visible(heading)) { autoStatus = 'No visible h1.entry-title yet'; updateDiagnostics(); return 0; }
     let count = 0;
+    const injectedHrefs = [...document.querySelectorAll('a[href]')].filter(a => visible(a)).map(a => a.href);
     for (const card of document.querySelectorAll('.card-body')) {
       if (!visible(card)) continue;
       const label = [...card.querySelectorAll('.badge')].some(b => visible(b) && b.innerText.includes('隐藏内容'));
       if (!label) continue;
       const text = card.innerText;
       const hrefs = [...card.querySelectorAll('a[href]')].filter(a => visible(a)).map(a => a.href);
-      for (const capture of parsePurchased(heading.innerText, location.origin + location.pathname, text, hrefs)) { count++; try { enqueue(capture); } catch { autoStatus = 'Could not prepare capture'; updateDiagnostics(); } }
+      for (const capture of parsePurchased(heading.innerText, location.origin + location.pathname, text, hrefs, injectedHrefs)) { count++; try { enqueue(capture); } catch { autoStatus = 'Could not prepare capture'; updateDiagnostics(); } }
     }
     autoStatus = count ? `${count} visible purchased share(s) found on this page` : 'No visible purchased card with a Baidu share found';
     updateDiagnostics(); return count;

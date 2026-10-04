@@ -44,3 +44,15 @@ test('inline PNG dimensions can be read before the image has decoded', () => {
   assert.deepEqual(pngDimensions(src),{width:283,height:30});
   assert.equal(pngDimensions('data:image/png;base64,bad'),null);
 });
+
+test('injected passcode href is recorded only for the visible purchased share', () => {
+  const plain = 'https://pan.baidu.com/s/1ExampleShareKey';
+  const direct = plain + '?pwd=demo';
+  const text = '隐藏内容 链接：' + plain + ' 提取码：demo';
+  const capture = parsePurchased('Resource', 'https://wckbot17.com/zhibo/1.html', text, [], [direct, 'https://pan.baidu.com/s/1Other?pwd=abcd'])[0];
+  assert.equal(capture.directURL, direct);
+  assert.equal(capture.notes, text);
+  assert.deepEqual(parsePurchased('Resource', 'source', 'Please purchase', [], [direct]), []);
+  assert.equal(parsePurchased('Resource', 'source', text, [], ['https://evil.example/s/1ExampleShareKey?pwd=demo'])[0].directURL, undefined);
+  assert.equal(parsePurchased('Resource', 'source', text, [], [direct, plain + '?pwd=abcd'])[0].directURL, undefined);
+});

@@ -24,7 +24,7 @@ function launch({ menu, initialToken = '', reply = null, hasSource = false, host
   const card = new Element('div'); card.innerText = '隐藏内容 链接：https://pan.baidu.com/s/1KeyA 提取码test';
   const label = new Element('span'); label.innerText = '隐藏内容'; card.appendChild(label);
   card.querySelectorAll = selector => selector === '.badge' ? [label] : [];
-  const page = {hasSource,images};
+  const page = {hasSource,images,links:[]};
   const root = bodyReady ? body : new Element('html');
   const windowEvents = {}, documentEvents = {};
   const intervals = [];
@@ -35,7 +35,7 @@ function launch({ menu, initialToken = '', reply = null, hasSource = false, host
   const context = {
     window: {getComputedStyle: () => ({display:'block',visibility:'visible',opacity:'1'}), addEventListener:(name,fn)=>windowEvents[name]=fn, dispatchEvent:event=>windowEvents[event.type]?.(event)},
     CustomEvent: class {constructor(type,options){this.type=type;this.detail=options.detail;}},
-    document: {body:bodyReady?body:null, documentElement:root, addEventListener:(name,fn)=>documentEvents[name]=fn, createElement: tag => new Element(tag), querySelector: () => page.hasSource ? heading : null, querySelectorAll: selector => selector==='img'?page.images:(page.hasSource && selector === '.card-body' ? [card] : [])},
+    document: {body:bodyReady?body:null, documentElement:root, addEventListener:(name,fn)=>documentEvents[name]=fn, createElement: tag => new Element(tag), querySelector: () => page.hasSource ? heading : null, querySelectorAll: selector => selector==='img'?page.images:(selector==='a[href]'?page.links:(page.hasSource && selector === '.card-body' ? [card] : []))},
     location: {hostname, origin:'https://'+hostname, pathname:hostname==='pan.baidu.com'?'/s/1KeyA':'/zhibo/1.html', href:hostname==='pan.baidu.com'?'https://pan.baidu.com/s/1KeyA':'https://wckbot17.com/zhibo/1.html'},
     GM_getValue: (key, fallback) => storage.has(key) ? storage.get(key) : fallback,
     GM_setValue: (key, value) => storage.set(key, structuredClone(value)),
@@ -219,4 +219,18 @@ test('close-time handshake reports inactive for unpaired scripts and ignores inv
   app.windowEvents['resourcetrace:capture-request']({detail:{requestID:'bad'}});
   app.windowEvents['resourcetrace:capture-request']({detail:'bad/request'});
   assert.equal(acknowledgements.length,1);
+});
+
+
+test('a later visible injected href updates the captured purchase without navigation', async () => {
+  const app = launch({initialToken:'test-token-'.repeat(5),hasSource:true});
+  await new Promise(resolve => setImmediate(resolve));
+  app.requests[0].onload({status:200,responseText:'{}'});
+  const link = {href:'https://pan.baidu.com/s/1KeyA?pwd=demo',hidden:false,parentElement:null,getAttribute:()=>null,getClientRects:()=>[{}]};
+  app.page.links.push(link);
+  app.mutation([{target:{}}]); app.timers.at(-1)();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(app.requests.length,2);
+  assert.equal(JSON.parse(app.requests[1].data).directURL,link.href);
+  assert.equal(app.context.location.href,'https://wckbot17.com/zhibo/1.html');
 });

@@ -1,5 +1,11 @@
 # Changelog
 
+## ResourceTrace companion 1.0.7
+
+- Observe a visible injected Baidu passcode href on purchased source pages and capture it only for the same purchased share. Late-added overlays update the resource without navigation. Conflicting links are left for review.
+- The native ResourceTrace app displays the stored URL as **Link** in purchase notes. Baidu Pan Auto-Save itself remains 1.0.6.
+
+
 ## 1.0.6
 
 - Added an optional ResourceTrace capture handshake before closing a successfully saved Baidu tab. Already captured, unpaired and absent companions retain the ordinary closing delay; a paired companion waiting for filename evidence gets at most five seconds.

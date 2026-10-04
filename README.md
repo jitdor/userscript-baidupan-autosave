@@ -84,3 +84,7 @@ No build step or third-party runtime dependency is required. The root `.user.js`
 ## License
 
 [MIT](LICENSE)
+
+### ResourceTrace companion 1.0.7
+
+The companion now records a visible injected passcode URL (`?pwd=…`) only when it matches the share in the visible purchased card. The native app presents it as **Link** in purchase notes. Reload the purchased page after installing this companion update to capture the existing overlay. It observes links without opening them or entering passcodes. The Auto-Save script remains version 1.0.6.
