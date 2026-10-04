@@ -53,6 +53,18 @@ Page-load lanes use renewable leases as a fallback when a tab is closed
 manually or crashes. Leave queued tabs open until their status changes to
 success or failure.
 
+## ResourceTrace capture before closing
+
+Starting with 1.0.6, Auto-Save asks a paired ResourceTrace companion to queue visible filename evidence before it closes a successfully saved share tab. The normal 1.5-second closing delay remains when the companion is absent, unpaired, or already has the evidence. If ResourceTrace is present and still waiting for a filename, the tab gets up to five seconds total before closing. The saving queue, extraction-code handling and Baidu request behavior are unchanged.
+
+[Install the ResourceTrace companion](https://raw.githubusercontent.com/jitdor/userscript-baidupan-autosave/main/companion/resource-trace.user.js) separately in the same userscript manager. It requires the ResourceTrace macOS app and a pairing token copied from that app. On a supported page, click the ResourceTrace badge at the lower right to pair; AdGuard for Mac does not need a toolbar icon. Replace the existing ResourceTrace entry rather than leaving duplicates enabled, and reload existing tabs after updating.
+
+The companion observes only visible purchased metadata on `wckbot17.com` and visible filename text or inline PNG images on `pan.baidu.com`. It starts at document start and stores evidence before sending it to the app for OCR. A supported open source tab can send evidence left queued by a closed Baidu tab. Keep one source tab open, or revisit a supported page to resume delivery. The handshake exchanges only an opaque request ID and a readiness status; titles, image data and pairing tokens do not cross those DOM events. OCR and filename approval can finish after the Baidu tab closes.
+
+The grace period is bounded and cannot guarantee capture if a filename never appears, userscript execution is delayed, or the manager does not expose the cross-script events/shared storage promptly. This integration is tested with offline fixtures, not a live authenticated Edge/AdGuard session. You can increase `RESOURCETRACE_CAPTURE_GRACE_MILLISECONDS` in the source if your page renders more slowly; without a responding companion, the normal close delay still applies. The companion does not open shares, enter passcodes, save files or change access controls.
+
+The macOS app itself is distributed separately; this repository contains the companion userscript and its tests.
+
 ## Notes
 
 - Sign in to Baidu Pan before opening share links.

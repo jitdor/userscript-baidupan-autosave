@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.6
+
+- Added an optional ResourceTrace capture handshake before closing a successfully saved Baidu tab. Already captured, unpaired and absent companions retain the ordinary closing delay; a paired companion waiting for filename evidence gets at most five seconds.
+- Published the ResourceTrace 1.0.6 companion under `companion/`, with stable install/update URLs, immediate Baidu observation, synchronous PNG evidence queueing, cross-tab queues and migration from older ResourceTrace storage.
+- Added tests for close-time readiness, timeout, absent companions, late filename evidence, concurrent queues and companion capture helpers.
+- Preserved existing save/navigation queues, retry behavior and extraction-code handling.
+
 ## 1.0.5
 
 - Reload the page immediately when Baidu reports an invalid extraction code

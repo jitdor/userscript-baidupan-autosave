@@ -143,7 +143,7 @@ function loadTestApi(overrides = {}) {
 const api = loadTestApi();
 
 test("metadata exposes a stable raw update URL", () => {
-    assert.match(source, /@version\s+1\.0\.5/);
+    assert.match(source, /@version\s+1\.0\.6/);
     assert.match(
         source,
         /@updateURL\s+https:\/\/raw\.githubusercontent\.com\/jitdor\/userscript-baidupan-autosave\/main\/baidupan-autosave\.user\.js/
@@ -464,4 +464,82 @@ test("a failed globally locked job executes exactly once", async () => {
         /transfer failed/
     );
     assert.equal(invocationCount, 1);
+});
+
+
+function captureCloseHarness(responder) {
+    const events = new Map(), timers = new Map();
+    let nextTimer = 0, closeCount = 0;
+    const overrides = {
+        CustomEvent: class {constructor(type, options) {this.type = type; this.detail = options.detail;}},
+        addEventListener(type, listener) {events.set(type, listener);},
+        removeEventListener(type, listener) {if (events.get(type) === listener) events.delete(type);},
+        dispatchEvent(event) {responder?.(event, reply => events.get("resourcetrace:capture-status")?.({detail:JSON.stringify(reply)}));},
+        setTimeout(fn, milliseconds) {const id=++nextTimer; timers.set(id,{fn,milliseconds,interval:false}); return id;},
+        clearTimeout(id) {timers.delete(id);},
+        setInterval(fn, milliseconds) {const id=++nextTimer; timers.set(id,{fn,milliseconds,interval:true}); return id;},
+        clearInterval(id) {timers.delete(id);},
+        closed: false,
+        close() {closeCount++; this.closed=true;}
+    };
+    const api = loadTestApi(overrides);
+    return {api,events,timers,get closeCount(){return closeCount;},fire(milliseconds) {
+        for (const [id,timer] of [...timers]) if (timer.milliseconds === milliseconds) {
+            if (!timer.interval) timers.delete(id);
+            timer.fn();
+        }
+    }};
+}
+
+test("ResourceTrace ready status clears timers without waiting for OCR or delivery", async () => {
+    const app = captureCloseHarness((event,reply)=>reply({requestID:event.detail,status:"ready"}));
+    assert.equal(await app.api.waitForResourceTraceCapture(),true);
+    assert.equal(app.timers.size,0);
+    assert.equal(app.events.size,0);
+});
+test("missing companion gives up after a short probe without changing the normal close delay", async () => {
+    const app = captureCloseHarness();
+    const closing = app.api.closeTabAfterSuccess();
+    app.fire(200);
+    await Promise.resolve();
+    assert.equal(app.closeCount,0);
+    app.fire(1500);
+    await closing;
+    assert.equal(app.closeCount,1);
+    assert.equal(app.events.size,0);
+});
+test("paired companion gets a bounded grace period for late filename evidence", async () => {
+    let ready=false;
+    const app = captureCloseHarness((event,reply)=>reply({requestID:event.detail,status:ready?"ready":"waiting"}));
+    const closing = app.api.closeTabAfterSuccess();
+    app.fire(1500);
+    await Promise.resolve();
+    assert.equal(app.closeCount,0);
+    ready=true;
+    app.fire(100);
+    await closing;
+    assert.equal(app.closeCount,1);
+    assert.equal(app.events.size,0);
+});
+test("missing filename cannot keep a saved tab waiting indefinitely", async () => {
+    const app = captureCloseHarness((event,reply)=>reply({requestID:event.detail,status:"waiting"}));
+    const closing=app.api.closeTabAfterSuccess();
+    app.fire(1500);
+    app.fire(5000);
+    await closing;
+    assert.equal(app.closeCount,1);
+    assert.equal(app.events.size,0);
+});
+test("unrelated or malformed ResourceTrace statuses do not authorize early completion", async () => {
+    const app = captureCloseHarness((event,reply)=>{
+        reply({requestID:event.detail,status:"waiting"});
+        reply({requestID:"different",status:"ready"});
+        reply({requestID:event.detail,status:"unknown"});
+    });
+    let complete=false;
+    const pending=app.api.waitForResourceTraceCapture().then(value=>{complete=true;return value;});
+    await Promise.resolve();
+    assert.equal(complete,false);
+    app.fire(5000);
+    assert.equal(await pending,false);
 });

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Baidu Pan Auto-Save
 // @namespace    https://github.com/jitdor/userscript-baidupan-autosave
-// @version      1.0.5
+// @version      1.0.6
 // @description  Automatically queues and saves unlocked Baidu Pan shares to a configurable folder.
 // @author       jitdor
 // @homepageURL  https://github.com/jitdor/userscript-baidupan-autosave
@@ -24,6 +24,7 @@
     const DESTINATION_SETTING_KEY = "destinationPath";
     const AUTO_CLOSE_AFTER_SUCCESS = true;
     const AUTO_CLOSE_DELAY_MILLISECONDS = 1500;
+    const RESOURCETRACE_CAPTURE_GRACE_MILLISECONDS = 5000;
     const TRANSFER_BATCH_SIZE = 100;
     const TRANSFER_MAX_ATTEMPTS = 7;
     const RETRY_BASE_DELAY_MILLISECONDS = 1800;
@@ -1871,22 +1872,62 @@
         element.textContent = message;
     }
 
-    function closeTabAfterSuccess() {
+    // Optional companion handshake. It waits for evidence to reach the userscript
+    // queue, not for OCR/network completion. DOM events carry no resource data.
+    function waitForResourceTraceCapture() {
+        if (typeof window.dispatchEvent !== "function" ||
+            typeof window.removeEventListener !== "function" ||
+            typeof CustomEvent !== "function") return Promise.resolve(false);
+        return new Promise(resolve => {
+            const requestID = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+            let finished = false;
+            let absentTimer, deadlineTimer, probeTimer;
+            const finish = captured => {
+                if (finished) return;
+                finished = true;
+                clearTimeout(absentTimer);
+                clearTimeout(deadlineTimer);
+                clearInterval(probeTimer);
+                window.removeEventListener("resourcetrace:capture-status", onStatus);
+                resolve(captured);
+            };
+            const onStatus = event => {
+                if (typeof event.detail !== "string") return;
+                let reply;
+                try { reply = JSON.parse(event.detail); } catch { return; }
+                if (reply?.requestID !== requestID) return;
+                if (reply.status === "ready") finish(true);
+                else if (reply.status === "inactive") finish(false);
+                else if (reply.status === "waiting") clearTimeout(absentTimer);
+            };
+            const probe = () => {
+                try {
+                    window.dispatchEvent(new CustomEvent("resourcetrace:capture-request", {detail:requestID}));
+                } catch { finish(false); }
+            };
+            window.addEventListener("resourcetrace:capture-status", onStatus);
+            absentTimer = setTimeout(() => finish(false), 200);
+            deadlineTimer = setTimeout(() => finish(false), RESOURCETRACE_CAPTURE_GRACE_MILLISECONDS);
+            probeTimer = setInterval(probe, 100);
+            probe();
+        });
+    }
+
+    async function closeTabAfterSuccess() {
         if (!AUTO_CLOSE_AFTER_SUCCESS) return;
-
+        // Retain the ordinary close delay when the companion is absent/ready.
+        // A paired companion still waiting for a filename gets at most 5 seconds.
+        await Promise.all([
+            sleep(AUTO_CLOSE_DELAY_MILLISECONDS),
+            waitForResourceTraceCapture()
+        ]);
+        releaseNavigationSlot();
+        window.close();
         setTimeout(() => {
-            releaseNavigationSlot();
-            window.close();
-
-            setTimeout(() => {
-                if (!window.closed) {
-                    showStatus(
-                        "Saved successfully. The browser blocked automatic tab closing.",
-                        true
-                    );
-                }
-            }, 500);
-        }, AUTO_CLOSE_DELAY_MILLISECONDS);
+            if (!window.closed) {
+                showStatus("Saved successfully. The browser blocked automatic tab closing.", true);
+            }
+        }, 500);
     }
 
     async function processTransferJob(
@@ -1996,7 +2037,7 @@
                     jobIdentity
                 )
             );
-            closeTabAfterSuccess();
+            await closeTabAfterSuccess();
         } catch (error) {
             releaseNavigationSlot();
             console.error(
@@ -2039,7 +2080,9 @@
             renewNavigationSlot,
             releaseNavigationSlot,
             listNavigationRequests,
-            cleanupNavigationState
+            cleanupNavigationState,
+            waitForResourceTraceCapture,
+            closeTabAfterSuccess
         });
         return;
     }
