@@ -33,7 +33,7 @@ function launch({ menu, initialToken = '', reply = null, hasSource = false, host
   const storage = sharedStorage || new Map([['token', initialToken]]);
   const prompts = [], requests = [], alerts = [];
   const context = {
-    window: {getComputedStyle: () => ({display:'block',visibility:'visible',opacity:'1'}), addEventListener:(name,fn)=>windowEvents[name]=fn, dispatchEvent:event=>windowEvents[event.type]?.(event)},
+    window: {getComputedStyle: el => ({display:'block',visibility:'visible',opacity:'1',...el.style}), addEventListener:(name,fn)=>windowEvents[name]=fn, dispatchEvent:event=>windowEvents[event.type]?.(event)},
     CustomEvent: class {constructor(type,options){this.type=type;this.detail=options.detail;}},
     document: {body:bodyReady?body:null, documentElement:root, addEventListener:(name,fn)=>documentEvents[name]=fn, createElement: tag => new Element(tag), querySelector: () => page.hasSource ? heading : null, querySelectorAll: selector => selector==='img'?page.images:(selector==='a[href]'?page.links:(page.hasSource && selector === '.card-body' ? [card] : []))},
     location: {hostname, origin:'https://'+hostname, pathname:hostname==='pan.baidu.com'?'/s/1KeyA':'/zhibo/1.html', href:hostname==='pan.baidu.com'?'https://pan.baidu.com/s/1KeyA':'https://wckbot17.com/zhibo/1.html'},
@@ -50,7 +50,10 @@ function launch({ menu, initialToken = '', reply = null, hasSource = false, host
   vm.runInNewContext(fs.readFileSync(__dirname + '/resource-trace.user.js', 'utf8'), context);
   const shadow = root.children[0].testShadow;
   const panel = shadow.children[1], badge = shadow.children[2];
-  return {context, storage, prompts, requests, alerts, panel, badge, page, timers, intervals, windowEvents, documentEvents, mutation: (...args) => mutation(...args), diagnostics: panel.children[6]};
+  const floating = new Element('div'); floating.style = {position:'fixed',top:'10px',left:'10px'};
+  const link = new Element('a'); link.href = 'https://pan.baidu.com/s/1KeyA?pwd=demo'; floating.appendChild(link); page.links.push(link);
+  const clickSource = (options = {}) => documentEvents[options.type || 'click']({type:'click',button:0,isTrusted:true,target:{closest:()=>link},...options});
+  return {clickSource, link, floating, context, storage, prompts, requests, alerts, panel, badge, page, timers, intervals, windowEvents, documentEvents, mutation: (...args) => mutation(...args), diagnostics: panel.children[6]};
 }
 
 test('AdGuard without a toolbar menu can click the badge and save the app token', () => {
@@ -94,24 +97,39 @@ test('inline manual filename uses privileged authenticated HTTP after pairing', 
   assert.equal(app.requests[0].url, 'http://127.0.0.1:49731/capture');
 });
 
-test('automatic page load captures a visible purchased card without a click', async () => {
-  const app = launch({initialToken:'test-token-'.repeat(5), hasSource:true});
-  await new Promise(resolve => setImmediate(resolve));
+test('page load, observer, timers and lifecycle events never ingest a purchase before the floating link click', () => {
+  const app = launch({initialToken:'test-token-'.repeat(5),hasSource:true});
+  app.mutation([{target:{}}]); app.timers.at(-1)();
+  for (const interval of app.intervals) interval.fn();
+  for (const name of ['pageshow','pagehide']) app.windowEvents[name]();
+  app.documentEvents.DOMContentLoaded();
+  app.panel.children[1].click();
+  assert.equal(app.requests.length,0);
+  assert.match(app.diagnostics.textContent,/Click the floating Baidu link/);
+  app.clickSource();
   assert.equal(app.requests.length,1);
   const data = JSON.parse(app.requests[0].data);
   assert.equal(data.kind,'source'); assert.equal(data.title,'示例资源 bf35233');
-  assert.match(app.diagnostics.textContent,/1 visible purchased share/);
+  assert.equal(data.directURL,app.link.href);
 });
-test('a purchased card appearing later is captured by the observer', async () => {
-  const app = launch({initialToken:'test-token-'.repeat(5)});
-  assert.match(app.diagnostics.textContent,/No visible h1/);
-  app.page.hasSource = true;
-  app.mutation([{target:{}}]); app.timers.at(-1)();
-  await new Promise(resolve => setImmediate(resolve));
+test('only a real click on the top-left floating purchased share is accepted', () => {
+  const app = launch({initialToken:'test-token-'.repeat(5),hasSource:true});
+  app.clickSource({isTrusted:false});
+  app.clickSource({button:2});
+  app.floating.style.position='static'; app.clickSource();
+  app.floating.style.position='fixed'; app.link.href='https://pan.baidu.com/s/1Other?pwd=demo'; app.clickSource();
+  assert.equal(app.requests.length,0);
+  app.link.href='https://pan.baidu.com/s/1KeyA?pwd=demo';
+  app.clickSource({type:'auxclick',button:1});
   assert.equal(app.requests.length,1);
+});
+test('an unpaid page is not ingested even on a floating link click', () => {
+  const app = launch({initialToken:'test-token-'.repeat(5)}); app.clickSource();
+  assert.equal(app.requests.length,0);
 });
 test('network failures are reported as connection failures and preserve captures', async () => {
   const app = launch({initialToken:'test-token-'.repeat(5), hasSource:true});
+  app.clickSource();
   await new Promise(resolve => setImmediate(resolve));
   app.requests[0].onerror({error:'network unavailable'});
   await new Promise(resolve => setImmediate(resolve));
@@ -133,6 +151,7 @@ test('explicit connection test enables browser fallback only after GM fails', as
 test('queued capture export contains metadata and never the pairing token', async () => {
   const token = 'secret-token-'.repeat(5);
   const app = launch({initialToken:token,hasSource:true});
+  app.clickSource();
   await new Promise(resolve => setImmediate(resolve));
   let blob;
   const oldCreate = URL.createObjectURL;
@@ -222,15 +241,11 @@ test('close-time handshake reports inactive for unpaired scripts and ignores inv
 });
 
 
-test('a later visible injected href updates the captured purchase without navigation', async () => {
-  const app = launch({initialToken:'test-token-'.repeat(5),hasSource:true});
-  await new Promise(resolve => setImmediate(resolve));
-  app.requests[0].onload({status:200,responseText:'{}'});
-  const link = {href:'https://pan.baidu.com/s/1KeyA?pwd=demo',hidden:false,parentElement:null,getAttribute:()=>null,getClientRects:()=>[{}]};
-  app.page.links.push(link);
+test('click intent survives a purchased card appearing later', () => {
+  const app = launch({initialToken:'test-token-'.repeat(5)});
+  app.clickSource(); assert.equal(app.requests.length,0);
+  app.page.hasSource=true;
   app.mutation([{target:{}}]); app.timers.at(-1)();
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(app.requests.length,2);
-  assert.equal(JSON.parse(app.requests[1].data).directURL,link.href);
-  assert.equal(app.context.location.href,'https://wckbot17.com/zhibo/1.html');
+  assert.equal(app.requests.length,1);
+  assert.equal(JSON.parse(app.requests[0].data).directURL,app.link.href);
 });

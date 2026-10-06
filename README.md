@@ -88,3 +88,7 @@ No build step or third-party runtime dependency is required. The root `.user.js`
 ### ResourceTrace companion 1.0.7
 
 The companion now records a visible injected passcode URL (`?pwd=…`) only when it matches the share in the visible purchased card. The native app presents it as **Link** in purchase notes. Reload the purchased page after installing this companion update to capture the existing overlay. It observes links without opening them or entering passcodes. The Auto-Save script remains version 1.0.6.
+
+### ResourceTrace companion 1.0.8
+
+Purchased titles are now ingested only when you click the top-left floating Baidu passcode link on a supported purchased page. Page load, pairing and manual recapture no longer ingest an unclicked purchase. The visible purchased card and matching share are still required; the clicked href is retained as Link. Baidu filename capture and the close-time handshake remain automatic. Update the existing companion entry and reload source tabs. Auto-Save itself remains 1.0.6.

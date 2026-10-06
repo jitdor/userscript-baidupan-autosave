@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ResourceTrace — purchased resource provenance
 // @namespace    local.resourcetrace
-// @version      1.0.7
+// @version      1.0.8
 // @homepageURL  https://github.com/jitdor/userscript-baidupan-autosave
 // @updateURL    https://raw.githubusercontent.com/jitdor/userscript-baidupan-autosave/main/companion/resource-trace.user.js
 // @downloadURL  https://raw.githubusercontent.com/jitdor/userscript-baidupan-autosave/main/companion/resource-trace.user.js
@@ -284,7 +284,10 @@
     show('Exported — use Import browser captures in the Mac app');
     // Keep queued evidence until the app accepts it; export alone is not delivery.
   }
+  // Source intent is per page, never inferred from loading or observing it.
+  let selectedSourceURL = null;
   function captureSource() {
+    if (!selectedSourceURL) { autoStatus = 'Click the floating Baidu link at the top left to track this purchase'; updateDiagnostics(); return 0; }
     const heading = document.querySelector('h1.entry-title');
     if (!visible(heading)) { autoStatus = 'No visible h1.entry-title yet'; updateDiagnostics(); return 0; }
     let count = 0;
@@ -295,7 +298,9 @@
       if (!label) continue;
       const text = card.innerText;
       const hrefs = [...card.querySelectorAll('a[href]')].filter(a => visible(a)).map(a => a.href);
-      for (const capture of parsePurchased(heading.innerText, location.origin + location.pathname, text, hrefs, injectedHrefs)) { count++; try { enqueue(capture); } catch { autoStatus = 'Could not prepare capture'; updateDiagnostics(); } }
+      for (const capture of parsePurchased(heading.innerText, location.origin + location.pathname, text, hrefs, injectedHrefs)) {
+        if (shareKey(capture.baiduURL) !== shareKey(selectedSourceURL)) continue;
+        capture.directURL = selectedSourceURL; count++; try { enqueue(capture); } catch { autoStatus = 'Could not prepare capture'; updateDiagnostics(); } }
     }
     autoStatus = count ? `${count} visible purchased share(s) found on this page` : 'No visible purchased card with a Baidu share found';
     updateDiagnostics(); return count;
@@ -331,7 +336,7 @@
     if (!token) { show('Click here to pair with the Mac app'); return; }
     if (/^wckbot\d*\.com$/.test(location.hostname)) {
       const count = captureSource();
-      if (!queue.length && !sending && connectionStatus === 'Not tested') show(count ? 'Paid share found — preparing automatic capture' : 'Waiting for visible purchased content — click for details');
+      if (!queue.length && !sending && connectionStatus === 'Not tested') show(count ? 'Selected purchase captured' : 'Click the top-left Baidu link to track this purchase');
     } else if (location.hostname === 'pan.baidu.com') captureBaidu();
     flush();
   }
@@ -340,7 +345,7 @@
     if (value === null) return;
     if (!value || value.trim().length < 32) { show('Invalid token — copy it from the Mac app, then click here'); return; }
     token = value.trim(); GM_setValue('token', token); retryAt = 0; warning = ''; failures = 0;
-    show('Token saved — capturing this page'); capture();
+    show('Token saved'); capture();
   }
   function recapture() { for (const key of storageKeys(sentPrefix)) GM_deleteValue(key); retryAt = 0; warning = ''; capture(); }
   function enterFilename() {
@@ -386,6 +391,24 @@
     }
     window.dispatchEvent(new CustomEvent('resourcetrace:capture-status', {detail:JSON.stringify({requestID:event.detail,status})}));
   });
+  function sourceLinkClick(event) {
+    if (!/^wckbot\d*\.com$/.test(location.hostname) || !event.isTrusted || (event.type === 'auxclick' ? event.button !== 1 : event.button !== 0)) return;
+    const link = event.target?.closest?.('a[href]');
+    if (!link || !visible(link) || !passcodeLink(link.href, shareKey(link.href))) return;
+    let floating = false;
+    for (let parent = link.parentElement; parent; parent = parent.parentElement) {
+      const style = window.getComputedStyle(parent);
+      const top = parseFloat(style.top), left = parseFloat(style.left);
+      if (style.position === 'fixed' && top >= 0 && top <= 80 && left >= 0 && left <= 80) { floating = true; break; }
+    }
+    if (!floating) return;
+    selectedSourceURL = link.href;
+    // Queue synchronously before the normal link action opens the Baidu tab.
+    // Never prevent navigation or enter the passcode ourselves.
+    captureSource(); flush();
+  }
+  document.addEventListener('click', sourceLinkClick, true);
+  document.addEventListener('auxclick', sourceLinkClick, true);
   let debounce;
   const observer = new MutationObserver(mutations => {
     if (mutations.every(m => m.target === host || host.contains(m.target))) return;
