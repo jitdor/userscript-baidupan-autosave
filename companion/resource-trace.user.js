@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ResourceTrace — purchased resource provenance
 // @namespace    local.resourcetrace
-// @version      1.0.8
+// @version      1.0.9
 // @homepageURL  https://github.com/jitdor/userscript-baidupan-autosave
 // @updateURL    https://raw.githubusercontent.com/jitdor/userscript-baidupan-autosave/main/companion/resource-trace.user.js
 // @downloadURL  https://raw.githubusercontent.com/jitdor/userscript-baidupan-autosave/main/companion/resource-trace.user.js
@@ -33,6 +33,13 @@
   function archiveName(raw) {
     const n = (raw || '').trim().normalize('NFC');
     return n && !/[\/\\\x00-\x1f\x7f]/.test(n) && /\.(7z|zip)$/i.test(n) && new TextEncoder().encode(n).length <= 255 ? n : null;
+  }
+  function titleArchiveName(raw) {
+    const title = (raw || '').trim();
+    // Preserve spaces, Unicode and punctuation in the filename. Only strip
+    // known service suffixes; generic/loading/multiple-file titles fall back.
+    const match = title.match(/^(.+\.(?:7z|zip))(?:\s*[-_|–—]\s*(?:百度网盘|百度云|免费高速下载|Baidu Netdisk).*|\s*)$/i);
+    return match && (match[1].match(/\.(?:7z|zip)(?=\s|$)/gi) || []).length === 1 ? archiveName(match[1]) : null;
   }
   function visible(el, style = window.getComputedStyle.bind(window)) {
     if (!el || !el.getClientRects().length) return false;
@@ -95,7 +102,7 @@
     } catch { return null; }
   }
   // Pure helpers are exported only to the offline test harness.
-  if (typeof module !== 'undefined' && module.exports) { module.exports = { shareKey, archiveName, visible, parsePurchased, passcodeLink, captureID, pngDimensions }; return; }
+  if (typeof module !== 'undefined' && module.exports) { module.exports = { shareKey, archiveName, titleArchiveName, visible, parsePurchased, passcodeLink, captureID, pngDimensions }; return; }
 
   const endpoint = 'http://127.0.0.1:49731/capture';
   let token = GM_getValue('token', '');
@@ -309,6 +316,11 @@
     if (!shareKey(location.href)) { autoStatus = 'No supported share URL on this Baidu page'; updateDiagnostics(); return; }
     autoStatus = 'Observing visible Baidu filename evidence'; updateDiagnostics();
     const baiduURL = location.href;
+    const titleName = titleArchiveName(document.title);
+    if (titleName) {
+      autoStatus = 'Archive filename read from page title'; updateDiagnostics();
+      return enqueue({kind:'baidu', baiduURL, filename:titleName, filenameSource:'page-title'}) ? 1 : 0;
+    }
     const found = new Set(); let queued = 0;
     // Prefer accessible text, but all captured names still require user review.
     const elements = document.querySelectorAll('[title], [aria-label], .filename, .file-name, .file-name-text, .file-name-item');

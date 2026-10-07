@@ -92,3 +92,7 @@ The companion now records a visible injected passcode URL (`?pwd=…`) only when
 ### ResourceTrace companion 1.0.8
 
 Purchased titles are now ingested only when you click the top-left floating Baidu passcode link on a supported purchased page. Page load, pairing and manual recapture no longer ingest an unclicked purchase. The visible purchased card and matching share are still required; the clicked href is retained as Link. Baidu filename capture and the close-time handshake remain automatic. Update the existing companion entry and reload source tabs. Auto-Save itself remains 1.0.6.
+
+## ResourceTrace companion 1.0.9
+
+Read the exact archive filename from the Baidu HTML page title first, before scanning image evidence. Known Baidu service suffixes are removed while filename spaces and Unicode are preserved. Generic or ambiguous titles retain the DOM/image fallback. Page-title filenames are automatically approved by ResourceTrace app 1.0.11. Purchase tracking still requires clicking the top-left floating link. Auto-Save remains 1.0.6.

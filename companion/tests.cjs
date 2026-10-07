@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { shareKey, archiveName, visible, parsePurchased, captureID, pngDimensions } = require('./resource-trace.user.js');
+const { shareKey, archiveName, titleArchiveName, visible, parsePurchased, captureID, pngDimensions } = require('./resource-trace.user.js');
 test('share identity survives passcode parameters and share/init redirect', () => {
   assert.equal(shareKey('https://pan.baidu.com/s/1Ab_C-9?pwd=1234#foo'), 'Ab_C-9');
   assert.equal(shareKey('https://pan.baidu.com/share/init?surl=Ab_C-9'), 'Ab_C-9');
@@ -55,4 +55,8 @@ test('injected passcode href is recorded only for the visible purchased share', 
   assert.deepEqual(parsePurchased('Resource', 'source', 'Please purchase', [], [direct]), []);
   assert.equal(parsePurchased('Resource', 'source', text, [], ['https://evil.example/s/1ExampleShareKey?pwd=demo'])[0].directURL, undefined);
   assert.equal(parsePurchased('Resource', 'source', text, [], [direct, plain + '?pwd=abcd'])[0].directURL, undefined);
+});
+
+test('page title yields exact archive filename without inventing a generic share name', () => {
+  for (const [title, expected] of [['bf19884.7z','bf19884.7z'],['Mary archive.zip - 百度网盘','Mary archive.zip'],['中文 名称.7z_免费高速下载 | 百度网盘','中文 名称.7z'],['Mary-1.7z | Baidu Netdisk','Mary-1.7z'],['百度网盘 - 分享无限制',null],['two.7z and other.zip',null],['../bad.7z - 百度网盘',null]]) assert.equal(titleArchiveName(title),expected);
 });

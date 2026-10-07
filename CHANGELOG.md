@@ -66,3 +66,7 @@ The initial distributable used metadata version `1.4.0`, and release 1.0.1 used 
 - Queue purchased metadata only on a real click of the top-left floating Baidu link, including middle-click and keyboard activation.
 - Retain synchronous queueing before navigation, visible-purchase validation, share correlation and automatic Baidu evidence capture.
 - Test that load, mutations, timers, pairing and recapture cannot ingest an unclicked purchase.
+
+## ResourceTrace companion 1.0.9
+
+Read the exact archive filename from the Baidu HTML page title first, before scanning image evidence. Known Baidu service suffixes are removed while filename spaces and Unicode are preserved. Generic or ambiguous titles retain the DOM/image fallback. Page-title filenames are automatically approved by ResourceTrace app 1.0.11. Purchase tracking still requires clicking the top-left floating link. Auto-Save remains 1.0.6.

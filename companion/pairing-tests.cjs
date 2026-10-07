@@ -4,7 +4,7 @@ const vm = require('node:vm');
 const fs = require('node:fs');
 const { webcrypto } = require('node:crypto');
 
-function launch({ menu, initialToken = '', reply = null, hasSource = false, hostname = 'wckbot17.com', images = [], sharedStorage, bodyReady = true } = {}) {
+function launch({ menu, initialToken = '', reply = null, hasSource = false, hostname = 'wckbot17.com', pageTitle = '', images = [], sharedStorage, bodyReady = true } = {}) {
   class Element {
     constructor(tag) { this.tag = tag; this.tagName = tag.toUpperCase(); this.isConnected = false; this.style = {}; this.children = []; this.listeners = {}; this.attributes = {}; this.textContent = ''; this.hidden = false; }
     append(...nodes) { for (const n of nodes) this.appendChild(n); }
@@ -35,7 +35,7 @@ function launch({ menu, initialToken = '', reply = null, hasSource = false, host
   const context = {
     window: {getComputedStyle: el => ({display:'block',visibility:'visible',opacity:'1',...el.style}), addEventListener:(name,fn)=>windowEvents[name]=fn, dispatchEvent:event=>windowEvents[event.type]?.(event)},
     CustomEvent: class {constructor(type,options){this.type=type;this.detail=options.detail;}},
-    document: {body:bodyReady?body:null, documentElement:root, addEventListener:(name,fn)=>documentEvents[name]=fn, createElement: tag => new Element(tag), querySelector: () => page.hasSource ? heading : null, querySelectorAll: selector => selector==='img'?page.images:(selector==='a[href]'?page.links:(page.hasSource && selector === '.card-body' ? [card] : []))},
+    document: {title:pageTitle, body:bodyReady?body:null, documentElement:root, addEventListener:(name,fn)=>documentEvents[name]=fn, createElement: tag => new Element(tag), querySelector: () => page.hasSource ? heading : null, querySelectorAll: selector => selector==='img'?page.images:(selector==='a[href]'?page.links:(page.hasSource && selector === '.card-body' ? [card] : []))},
     location: {hostname, origin:'https://'+hostname, pathname:hostname==='pan.baidu.com'?'/s/1KeyA':'/zhibo/1.html', href:hostname==='pan.baidu.com'?'https://pan.baidu.com/s/1KeyA':'https://wckbot17.com/zhibo/1.html'},
     GM_getValue: (key, fallback) => storage.has(key) ? storage.get(key) : fallback,
     GM_setValue: (key, value) => storage.set(key, structuredClone(value)),
@@ -248,4 +248,19 @@ test('click intent survives a purchased card appearing later', () => {
   app.mutation([{target:{}}]); app.timers.at(-1)();
   assert.equal(app.requests.length,1);
   assert.equal(JSON.parse(app.requests[0].data).directURL,app.link.href);
+});
+
+test('title filename queues synchronously and skips image OCR evidence', () => {
+  const app=launch({initialToken:'test-token-'.repeat(5),hostname:'pan.baidu.com',pageTitle:'Mary archive.7z - 百度网盘',images:[filenameImage()]});
+  assert.equal(app.requests.length,1);
+  const payload=JSON.parse(app.requests[0].data);
+  assert.equal(payload.filename,'Mary archive.7z');
+  assert.equal(payload.filenameSource,'page-title');
+  assert.equal(payload.imageDataURL,undefined);
+});
+test('a late title update is captured by the observer without waiting for OCR', () => {
+  const app=launch({initialToken:'test-token-'.repeat(5),hostname:'pan.baidu.com',pageTitle:'百度网盘'});
+  assert.equal(app.requests.length,0);
+  app.context.document.title='ABC.zip - 百度网盘';app.mutation([{target:{}}]);
+  assert.equal(JSON.parse(app.requests[0].data).filename,'ABC.zip');
 });
