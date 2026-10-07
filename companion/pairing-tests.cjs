@@ -31,9 +31,9 @@ function launch({ menu, initialToken = '', reply = null, hasSource = false, host
   let mutation;
   const timers = [];
   const storage = sharedStorage || new Map([['token', initialToken]]);
-  const prompts = [], requests = [], alerts = [];
+  const prompts = [], requests = [], alerts = [], navigations = [], openedTabs = [];
   const context = {
-    window: {getComputedStyle: el => ({display:'block',visibility:'visible',opacity:'1',...el.style}), addEventListener:(name,fn)=>windowEvents[name]=fn, dispatchEvent:event=>windowEvents[event.type]?.(event)},
+    window: {location:{assign:href=>navigations.push(href)}, open:(url,target)=>{const tab={closed:false,opener:{},location:{replace:href=>navigations.push(href)},close(){this.closed=true;}};openedTabs.push(tab);return tab;}, getComputedStyle: el => ({display:'block',visibility:'visible',opacity:'1',...el.style}), addEventListener:(name,fn)=>windowEvents[name]=fn, dispatchEvent:event=>windowEvents[event.type]?.(event)},
     CustomEvent: class {constructor(type,options){this.type=type;this.detail=options.detail;}},
     document: {title:pageTitle, body:bodyReady?body:null, documentElement:root, addEventListener:(name,fn)=>documentEvents[name]=fn, createElement: tag => new Element(tag), querySelector: () => page.hasSource ? heading : null, querySelectorAll: selector => selector==='img'?page.images:(selector==='a[href]'?page.links:(page.hasSource && selector === '.card-body' ? [card] : []))},
     location: {hostname, origin:'https://'+hostname, pathname:hostname==='pan.baidu.com'?'/s/1KeyA':'/zhibo/'+sourcePage+'.html', href:hostname==='pan.baidu.com'?'https://pan.baidu.com/s/1KeyA':'https://wckbot17.com/zhibo/1.html'},
@@ -52,8 +52,8 @@ function launch({ menu, initialToken = '', reply = null, hasSource = false, host
   const panel = shadow.children[1], badge = shadow.children[2];
   const floating = new Element('div'); floating.style = {position:'fixed',top:'10px',left:'10px'};
   const link = new Element('a'); link.href = 'https://pan.baidu.com/s/1'+sourceKey+'?pwd=demo'; floating.appendChild(link); page.links.push(link);
-  const clickSource = (options = {}) => windowEvents[options.type || 'click']({type:'click',button:0,isTrusted:true,target:{closest:()=>link},...options});
-  return {clickSource, link, floating, context, storage, prompts, requests, alerts, panel, badge, page, timers, intervals, windowEvents, documentEvents, mutation: (...args) => mutation(...args), diagnostics: panel.children[6]};
+  const clickSource = (options = {}) => windowEvents[options.type || 'click']({type:'click',button:0,isTrusted:true,preventDefault(){},stopImmediatePropagation(){},target:{closest:()=>link},...options});
+  return {navigations, openedTabs, clickSource, link, floating, context, storage, prompts, requests, alerts, panel, badge, page, timers, intervals, windowEvents, documentEvents, mutation: (...args) => mutation(...args), diagnostics: panel.children[6]};
 }
 
 test('AdGuard without a toolbar menu can click the badge and save the app token', () => {
@@ -133,7 +133,7 @@ test('network failures are reported as connection failures and preserve captures
   await new Promise(resolve => setImmediate(resolve));
   app.requests[0].onerror({error:'network unavailable'});
   await new Promise(resolve => setImmediate(resolve));
-  assert.match(app.badge.textContent,/connection failed/);
+  assert.match(app.badge.textContent,/Not opened/);
   assert.doesNotMatch(app.badge.textContent,/start app/);
   assert.equal([...app.storage.keys()].filter(key=>key.startsWith('rt.pending.')).length,1);
 });
@@ -302,4 +302,55 @@ test('source metadata remains durable when a clicked tab closes after a failed d
   reopened.requests[0].onload({status:200,responseText:'{}'});
   await new Promise(resolve=>setImmediate(resolve));
   assert.equal([...shared.keys()].filter(key=>key.startsWith('rt.pending.')).length,0);
+});
+
+test('Baidu navigation waits for a fresh app acknowledgement even with a previous sent marker', async () => {
+  const app=launch({initialToken:'test-token-'.repeat(5),hasSource:true});
+  app.link.target='_blank'; app.clickSource();
+  assert.equal(app.navigations.length,0);
+  assert.equal(app.openedTabs.length,1);
+  app.requests[0].onload({status:200,responseText:JSON.stringify({message:'Source captured'})});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.deepEqual(app.navigations,[app.link.href]);
+  app.clickSource(); assert.equal(app.navigations.length,1); assert.equal(app.requests.length,2);
+  app.requests[1].onload({status:200,responseText:JSON.stringify({message:'Source captured'})});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal(app.navigations.length,2);
+});
+test('network failure, rejection, and removed-resource responses never navigate', async () => {
+  for (const reply of ['network',401,422,'removed']) {
+    const app=launch({initialToken:'test-token-'.repeat(5),hasSource:true});app.link.target='_blank';app.clickSource();
+    if(reply==='network')app.requests[0].onerror({error:'offline'});
+    else app.requests[0].onload({status:reply==='removed'?200:reply,responseText:JSON.stringify({message:reply==='removed'?'Resource removed; restore it in the app to track again':'Pair the userscript'})});
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.equal(app.navigations.length,0);assert.equal(app.openedTabs[0].closed,true);
+    assert.match(app.badge.textContent,/Not opened/);
+  }
+});
+test('unpaired or missing purchased evidence blocks the original floating link action', () => {
+  for(const options of [{hasSource:true},{initialToken:'test-token-'.repeat(5)}]){
+    const app=launch(options);let stopped=false,prevented=false;
+    app.clickSource({preventDefault(){prevented=true},stopImmediatePropagation(){stopped=true}});
+    assert.equal(stopped,true);assert.equal(prevented,true);assert.equal(app.navigations.length,0);assert.equal(app.requests.length,0);
+  }
+});
+
+test('rapid purchases each open only after their own acknowledgement arrives', async () => {
+  const shared=new Map([['token','test-token-'.repeat(5)]]);
+  const apps=Array.from({length:24},(_,i)=>launch({sharedStorage:shared,hasSource:true,sourceKey:'Ack'+i,sourcePage:i+1}));
+  for(const app of apps){app.link.target='_blank';app.clickSource();assert.equal(app.navigations.length,0);}
+  for(let i=apps.length-1;i>=0;i--){
+    apps[i].requests[0].onload({status:200,responseText:JSON.stringify({message:'Source captured'})});
+    await new Promise(resolve=>setImmediate(resolve));
+    assert.deepEqual(apps[i].navigations,[apps[i].link.href]);
+    for(let waiting=0;waiting<i;waiting++)assert.equal(apps[waiting].navigations.length,0);
+  }
+});
+test('same-tab links resume after acknowledgement while blocked popups never silently change the source tab', async () => {
+  const same=launch({initialToken:'test-token-'.repeat(5),hasSource:true});same.clickSource();
+  same.requests[0].onload({status:200,responseText:JSON.stringify({message:'Source captured'})});
+  await new Promise(resolve=>setImmediate(resolve));assert.deepEqual(same.navigations,[same.link.href]);
+  const blocked=launch({initialToken:'test-token-'.repeat(5),hasSource:true});blocked.context.window.open=()=>null;
+  blocked.clickSource({type:'auxclick',button:1});blocked.requests[0].onload({status:200,responseText:JSON.stringify({message:'Source captured'})});
+  await new Promise(resolve=>setImmediate(resolve));assert.equal(blocked.navigations.length,0);assert.match(blocked.badge.textContent,/allow popups/);
 });

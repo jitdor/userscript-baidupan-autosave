@@ -100,3 +100,7 @@ Read the exact archive filename from the Baidu HTML page title first, before sca
 ## ResourceTrace companion 1.0.10
 
 Capture floating-link clicks at the window capture phase before document handlers can intercept them. Prioritize each tab's newly queued evidence and retain unacknowledged captures for retry across tab closure. Accept plain Baidu share links as well as passcode links, while still requiring the matching visible purchased card. Report a failed source capture in the badge. Tests cover 24 rapid source clicks, out-of-order delivery, and retry after a failed/closed tab. Auto-Save remains 1.0.6.
+
+## ResourceTrace companion 1.0.11
+
+Hold a clicked floating Baidu link until the running ResourceTrace app freshly acknowledges the purchased payload. Old sent markers cannot unlock navigation. New-tab links reserve a blank tab during the user gesture and navigate it only after confirmation; failures close that tab and retain the source page. Unpaired, rejected, removed-resource and network-failed captures never open Baidu. Click the source link again after resolving the error. Captures remain queued for retry. App 1.0.11 and Auto-Save 1.0.6 remain unchanged.

@@ -1,11 +1,11 @@
 // ==UserScript==
 // @name         ResourceTrace — purchased resource provenance
 // @namespace    local.resourcetrace
-// @version      1.0.10
+// @version      1.0.11
 // @homepageURL  https://github.com/jitdor/userscript-baidupan-autosave
 // @updateURL    https://raw.githubusercontent.com/jitdor/userscript-baidupan-autosave/main/companion/resource-trace.user.js
 // @downloadURL  https://raw.githubusercontent.com/jitdor/userscript-baidupan-autosave/main/companion/resource-trace.user.js
-// @description  Capture visible purchased metadata and Baidu filename evidence. No navigation, passcodes or downloads.
+// @description  Confirm clicked purchases in the Mac app before opening their Baidu link; capture filename evidence. No passcode entry or downloads.
 // @match        https://wckbot17.com/*
 // @match        https://pan.baidu.com/*
 // @grant        GM_getValue
@@ -177,7 +177,7 @@
   badge.addEventListener('keydown', event => {
     if (event.key === 'Escape') { panel.hidden = true; badge.setAttribute('aria-expanded', 'false'); }
   });
-  function enqueue(capture) {
+  function enqueue(capture, send = true) {
     const bytes = new TextEncoder().encode(JSON.stringify(capture));
     if (bytes.length > 1000000) { show('Capture too large; enter filename manually'); return false; }
     const id = captureID(capture);
@@ -187,7 +187,7 @@
     if (queue.length >= 120) { warning = 'Queue full: start app and retry capture'; show(warning); return false; }
     const item = {id,capture,at:Date.now()};
     // No await before this write. OCR happens locally after evidence is received.
-    GM_setValue(pendingPrefix+id,item); queue.push(item); updateDiagnostics(); flush(id); return true;
+    GM_setValue(pendingPrefix+id,item); queue.push(item); updateDiagnostics(); if (send) flush(id); return true;
   }
   function request(method, path, data, mode = transport) {
     if (mode === 'fetch') {
@@ -293,7 +293,7 @@
   }
   // Source intent is per page, never inferred from loading or observing it.
   let selectedSourceURL = null;
-  function captureSource() {
+  function captureSource(collect = null) {
     if (!selectedSourceURL) { autoStatus = 'Click the floating Baidu link at the top left to track this purchase'; updateDiagnostics(); return 0; }
     const heading = document.querySelector('h1.entry-title');
     if (!visible(heading)) { autoStatus = 'No visible h1.entry-title yet'; updateDiagnostics(); return 0; }
@@ -309,7 +309,7 @@
         if (shareKey(capture.baiduURL) !== shareKey(selectedSourceURL)) continue;
         const direct = passcodeLink(selectedSourceURL, shareKey(capture.baiduURL));
         if (direct) capture.directURL = direct;
-        try { if (enqueue(capture)) count++; } catch { autoStatus = 'Could not prepare capture'; updateDiagnostics(); } }
+        try { if (collect) { collect.push(capture); count++; } else if (enqueue(capture)) count++; } catch { autoStatus = 'Could not prepare capture'; updateDiagnostics(); } }
     }
     autoStatus = count ? `${count} visible purchased share(s) found on this page` : 'No visible purchased card with a Baidu share found';
     updateDiagnostics(); return count;
@@ -405,7 +405,8 @@
     }
     window.dispatchEvent(new CustomEvent('resourcetrace:capture-status', {detail:JSON.stringify({requestID:event.detail,status})}));
   });
-  function sourceLinkClick(event) {
+  let navigationPending = false;
+  async function sourceLinkClick(event) {
     if (!/^wckbot\d*\.com$/.test(location.hostname) || !event.isTrusted || (event.type === 'auxclick' ? event.button !== 1 : event.button !== 0)) return;
     const link = event.target?.closest?.('a[href]');
     if (!link || !visible(link) || !shareKey(link.href)) return;
@@ -416,16 +417,47 @@
       if (style.position === 'fixed' && top >= 0 && top <= 80 && left >= 0 && left <= 80) { floating = true; break; }
     }
     if (!floating) return;
+    event.preventDefault(); event.stopImmediatePropagation();
+    if (navigationPending) { show('Waiting for app acknowledgement'); return; }
     selectedSourceURL = link.href;
-    // Queue synchronously before the normal link action opens the Baidu tab.
-    // Never prevent navigation or enter the passcode ourselves.
-    const count = captureSource();
-    if (count) show('Purchase saved — syncing with Mac app');
-    else show(warning || 'Purchase not captured — visible purchased card required; click for details');
-    flush();
+    const captures = []; captureSource(captures);
+    if (!captures.length) { show('Not opened — matching visible purchased card required'); return; }
+    token = GM_getValue('token',token);
+    if (!token) { for (const capture of captures) enqueue(capture,false); show('Not opened — pair with the Mac app, then click the link again'); return; }
+    navigationPending = true;
+    const href = link.href;
+    const newTab = event.button === 1 || event.ctrlKey || event.metaKey || event.shiftKey || (link.target && link.target !== '_self');
+    // Reserve a blank tab during the user gesture, so browser popup protection
+    // does not block it later. No Baidu request happens until acknowledgement.
+    let destination = null;
+    if (newTab) { destination = window.open('about:blank','_blank'); if (destination) destination.opener = null; }
+    let opened = false;
+    try {
+      show('Waiting for Mac app — Baidu has not opened');
+      for (const capture of new Map(captures.map(c => [captureID(c),c])).values()) {
+        const id = captureID(capture);
+        // An old sent marker is not proof the current running app has this job.
+        GM_deleteValue(sentPrefix+id);
+        if (!enqueue(capture,false)) throw new Error('Capture could not be queued');
+        const response = await request('POST','/capture',JSON.stringify(capture));
+        const message = responseMessage(response);
+        if (response.status !== 200 || message !== 'Source captured') throw new Error(message || `App did not confirm purchase (HTTP ${response.status})`);
+        GM_setValue(sentPrefix+id,true); GM_deleteValue(pendingPrefix+id); GM_deleteValue(rejectedPrefix+id);
+      }
+      queue = readPending(); connectionStatus = 'Purchase acknowledged by Mac app'; updateDiagnostics();
+      if (newTab) {
+        if (!destination || destination.closed) { show('App confirmed — allow popups and click the link again to open Baidu'); return; }
+        destination.location.replace(href);
+      } else window.location.assign(href);
+      opened = true; show('App confirmed — opening Baidu');
+    } catch (error) {
+      show(`Not opened — ${networkError(error)}. Start/pair the app, then click the link again`);
+    } finally {
+      if (!opened && destination && !destination.closed) destination.close();
+      navigationPending = false;
+    }
   }
-  // Window capture runs before document/overlay handlers can stop the click
-  // or remove the purchased card. It never cancels the normal link action.
+  // Stop the original link action before document/overlay handlers navigate.
   window.addEventListener('click', sourceLinkClick, true);
   window.addEventListener('auxclick', sourceLinkClick, true);
   let debounce;
