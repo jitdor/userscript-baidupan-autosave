@@ -4,7 +4,7 @@ const vm = require('node:vm');
 const fs = require('node:fs');
 const { webcrypto } = require('node:crypto');
 
-function launch({ menu, initialToken = '', reply = null, hasSource = false, hostname = 'wckbot17.com', pageTitle = '', images = [], sharedStorage, bodyReady = true } = {}) {
+function launch({ menu, initialToken = '', reply = null, hasSource = false, hostname = 'wckbot17.com', pageTitle = '', sourceKey = 'KeyA', sourcePage = 1, images = [], sharedStorage, bodyReady = true } = {}) {
   class Element {
     constructor(tag) { this.tag = tag; this.tagName = tag.toUpperCase(); this.isConnected = false; this.style = {}; this.children = []; this.listeners = {}; this.attributes = {}; this.textContent = ''; this.hidden = false; }
     append(...nodes) { for (const n of nodes) this.appendChild(n); }
@@ -21,7 +21,7 @@ function launch({ menu, initialToken = '', reply = null, hasSource = false, host
   }
   const body = new Element('body');
   const heading = new Element('h1'); heading.innerText = '示例资源 bf35233';
-  const card = new Element('div'); card.innerText = '隐藏内容 链接：https://pan.baidu.com/s/1KeyA 提取码test';
+  const card = new Element('div'); card.innerText = '隐藏内容 链接：https://pan.baidu.com/s/1'+sourceKey+' 提取码test';
   const label = new Element('span'); label.innerText = '隐藏内容'; card.appendChild(label);
   card.querySelectorAll = selector => selector === '.badge' ? [label] : [];
   const page = {hasSource,images,links:[]};
@@ -36,7 +36,7 @@ function launch({ menu, initialToken = '', reply = null, hasSource = false, host
     window: {getComputedStyle: el => ({display:'block',visibility:'visible',opacity:'1',...el.style}), addEventListener:(name,fn)=>windowEvents[name]=fn, dispatchEvent:event=>windowEvents[event.type]?.(event)},
     CustomEvent: class {constructor(type,options){this.type=type;this.detail=options.detail;}},
     document: {title:pageTitle, body:bodyReady?body:null, documentElement:root, addEventListener:(name,fn)=>documentEvents[name]=fn, createElement: tag => new Element(tag), querySelector: () => page.hasSource ? heading : null, querySelectorAll: selector => selector==='img'?page.images:(selector==='a[href]'?page.links:(page.hasSource && selector === '.card-body' ? [card] : []))},
-    location: {hostname, origin:'https://'+hostname, pathname:hostname==='pan.baidu.com'?'/s/1KeyA':'/zhibo/1.html', href:hostname==='pan.baidu.com'?'https://pan.baidu.com/s/1KeyA':'https://wckbot17.com/zhibo/1.html'},
+    location: {hostname, origin:'https://'+hostname, pathname:hostname==='pan.baidu.com'?'/s/1KeyA':'/zhibo/'+sourcePage+'.html', href:hostname==='pan.baidu.com'?'https://pan.baidu.com/s/1KeyA':'https://wckbot17.com/zhibo/1.html'},
     GM_getValue: (key, fallback) => storage.has(key) ? storage.get(key) : fallback,
     GM_setValue: (key, value) => storage.set(key, structuredClone(value)),
     GM_listValues:()=>[...storage.keys()], GM_deleteValue:key=>storage.delete(key),
@@ -51,8 +51,8 @@ function launch({ menu, initialToken = '', reply = null, hasSource = false, host
   const shadow = root.children[0].testShadow;
   const panel = shadow.children[1], badge = shadow.children[2];
   const floating = new Element('div'); floating.style = {position:'fixed',top:'10px',left:'10px'};
-  const link = new Element('a'); link.href = 'https://pan.baidu.com/s/1KeyA?pwd=demo'; floating.appendChild(link); page.links.push(link);
-  const clickSource = (options = {}) => documentEvents[options.type || 'click']({type:'click',button:0,isTrusted:true,target:{closest:()=>link},...options});
+  const link = new Element('a'); link.href = 'https://pan.baidu.com/s/1'+sourceKey+'?pwd=demo'; floating.appendChild(link); page.links.push(link);
+  const clickSource = (options = {}) => windowEvents[options.type || 'click']({type:'click',button:0,isTrusted:true,target:{closest:()=>link},...options});
   return {clickSource, link, floating, context, storage, prompts, requests, alerts, panel, badge, page, timers, intervals, windowEvents, documentEvents, mutation: (...args) => mutation(...args), diagnostics: panel.children[6]};
 }
 
@@ -263,4 +263,43 @@ test('a late title update is captured by the observer without waiting for OCR', 
   assert.equal(app.requests.length,0);
   app.context.document.title='ABC.zip - 百度网盘';app.mutation([{target:{}}]);
   assert.equal(JSON.parse(app.requests[0].data).filename,'ABC.zip');
+});
+
+test('source capture listens before document click interception and accepts a plain share link', () => {
+  const app=launch({initialToken:'test-token-'.repeat(5),hasSource:true});
+  assert.equal(typeof app.windowEvents.click,'function');
+  assert.equal(app.documentEvents.click,undefined);
+  app.link.href='https://pan.baidu.com/s/1KeyA';app.clickSource();
+  assert.equal(app.requests.length,1);
+  assert.equal(JSON.parse(app.requests[0].data).directURL,undefined);
+});
+test('rapid source clicks in many tabs preserve every purchase and prioritize its own delivery', async () => {
+  const shared=new Map([['token','test-token-'.repeat(5)]]);
+  const apps=Array.from({length:24},(_,i)=>launch({sharedStorage:shared,hasSource:true,sourceKey:'Burst'+i,sourcePage:i+1}));
+  for (const app of apps) app.clickSource();
+  const pending=()=>[...shared.keys()].filter(key=>key.startsWith('rt.pending.'));
+  assert.equal(pending().length,24);
+  for (let i=0;i<apps.length;i++) {
+    assert.equal(JSON.parse(apps[i].requests[0].data).baiduURL,'https://pan.baidu.com/s/1Burst'+i);
+  }
+  // A tab can close without receiving an acknowledgement; its queue entry stays.
+  // Another tab delivers every pending entry, including out-of-order duplicates.
+  const drain=launch({sharedStorage:shared});
+  for (let i=0;i<24;i++) {
+    drain.requests[i].onload({status:200,responseText:'{}'});
+    await new Promise(resolve=>setImmediate(resolve));
+  }
+  assert.equal(pending().length,0);
+  assert.equal(drain.requests.length,24);
+});
+test('source metadata remains durable when a clicked tab closes after a failed delivery', async () => {
+  const shared=new Map([['token','test-token-'.repeat(5)]]);
+  const source=launch({sharedStorage:shared,hasSource:true});source.clickSource();
+  source.requests[0].onerror({error:'connection refused'});
+  await new Promise(resolve=>setImmediate(resolve));
+  const reopened=launch({sharedStorage:shared});
+  assert.equal(JSON.parse(reopened.requests[0].data).kind,'source');
+  reopened.requests[0].onload({status:200,responseText:'{}'});
+  await new Promise(resolve=>setImmediate(resolve));
+  assert.equal([...shared.keys()].filter(key=>key.startsWith('rt.pending.')).length,0);
 });

@@ -96,3 +96,7 @@ Purchased titles are now ingested only when you click the top-left floating Baid
 ## ResourceTrace companion 1.0.9
 
 Read the exact archive filename from the Baidu HTML page title first, before scanning image evidence. Known Baidu service suffixes are removed while filename spaces and Unicode are preserved. Generic or ambiguous titles retain the DOM/image fallback. Page-title filenames are automatically approved by ResourceTrace app 1.0.11. Purchase tracking still requires clicking the top-left floating link. Auto-Save remains 1.0.6.
+
+## ResourceTrace companion 1.0.10
+
+Capture floating-link clicks at the window capture phase before document handlers can intercept them. Prioritize each tab's newly queued evidence and retain unacknowledged captures for retry across tab closure. Accept plain Baidu share links as well as passcode links, while still requiring the matching visible purchased card. Report a failed source capture in the badge. Tests cover 24 rapid source clicks, out-of-order delivery, and retry after a failed/closed tab. Auto-Save remains 1.0.6.

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         ResourceTrace — purchased resource provenance
 // @namespace    local.resourcetrace
-// @version      1.0.9
+// @version      1.0.10
 // @homepageURL  https://github.com/jitdor/userscript-baidupan-autosave
 // @updateURL    https://raw.githubusercontent.com/jitdor/userscript-baidupan-autosave/main/companion/resource-trace.user.js
 // @downloadURL  https://raw.githubusercontent.com/jitdor/userscript-baidupan-autosave/main/companion/resource-trace.user.js
@@ -187,7 +187,7 @@
     if (queue.length >= 120) { warning = 'Queue full: start app and retry capture'; show(warning); return false; }
     const item = {id,capture,at:Date.now()};
     // No await before this write. OCR happens locally after evidence is received.
-    GM_setValue(pendingPrefix+id,item); queue.push(item); updateDiagnostics(); flush(); return true;
+    GM_setValue(pendingPrefix+id,item); queue.push(item); updateDiagnostics(); flush(id); return true;
   }
   function request(method, path, data, mode = transport) {
     if (mode === 'fetch') {
@@ -229,11 +229,11 @@
     connectionStatus = reason; updateDiagnostics();
     show(`${queue.length} queued — connection failed; click for Test connection`);
   }
-  async function flush() {
+  async function flush(preferredID = null) {
     queue = readPending(); token = GM_getValue('token',token); transport = GM_getValue('transport',transport);
     if (sending || !queue.length || !token || Date.now() < retryAt) return;
     sending = true;
-    const item = queue[0]; connectionStatus = `Sending using ${transport}`; updateDiagnostics();
+    const item = queue.find(item => item.id === preferredID) || queue[0]; connectionStatus = `Sending using ${transport}`; updateDiagnostics();
     try {
       const response = await request('POST', '/capture', JSON.stringify(item.capture));
       if (response.status === 200) {
@@ -307,7 +307,9 @@
       const hrefs = [...card.querySelectorAll('a[href]')].filter(a => visible(a)).map(a => a.href);
       for (const capture of parsePurchased(heading.innerText, location.origin + location.pathname, text, hrefs, injectedHrefs)) {
         if (shareKey(capture.baiduURL) !== shareKey(selectedSourceURL)) continue;
-        capture.directURL = selectedSourceURL; count++; try { enqueue(capture); } catch { autoStatus = 'Could not prepare capture'; updateDiagnostics(); } }
+        const direct = passcodeLink(selectedSourceURL, shareKey(capture.baiduURL));
+        if (direct) capture.directURL = direct;
+        try { if (enqueue(capture)) count++; } catch { autoStatus = 'Could not prepare capture'; updateDiagnostics(); } }
     }
     autoStatus = count ? `${count} visible purchased share(s) found on this page` : 'No visible purchased card with a Baidu share found';
     updateDiagnostics(); return count;
@@ -406,7 +408,7 @@
   function sourceLinkClick(event) {
     if (!/^wckbot\d*\.com$/.test(location.hostname) || !event.isTrusted || (event.type === 'auxclick' ? event.button !== 1 : event.button !== 0)) return;
     const link = event.target?.closest?.('a[href]');
-    if (!link || !visible(link) || !passcodeLink(link.href, shareKey(link.href))) return;
+    if (!link || !visible(link) || !shareKey(link.href)) return;
     let floating = false;
     for (let parent = link.parentElement; parent; parent = parent.parentElement) {
       const style = window.getComputedStyle(parent);
@@ -417,10 +419,15 @@
     selectedSourceURL = link.href;
     // Queue synchronously before the normal link action opens the Baidu tab.
     // Never prevent navigation or enter the passcode ourselves.
-    captureSource(); flush();
+    const count = captureSource();
+    if (count) show('Purchase saved — syncing with Mac app');
+    else show(warning || 'Purchase not captured — visible purchased card required; click for details');
+    flush();
   }
-  document.addEventListener('click', sourceLinkClick, true);
-  document.addEventListener('auxclick', sourceLinkClick, true);
+  // Window capture runs before document/overlay handlers can stop the click
+  // or remove the purchased card. It never cancels the normal link action.
+  window.addEventListener('click', sourceLinkClick, true);
+  window.addEventListener('auxclick', sourceLinkClick, true);
   let debounce;
   const observer = new MutationObserver(mutations => {
     if (mutations.every(m => m.target === host || host.contains(m.target))) return;
